@@ -1,0 +1,6 @@
+obj/
+ircserv
+*.o
+.DS_Store
+
+en.subject-15.pdf

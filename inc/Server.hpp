@@ -3,6 +3,8 @@
 
 # include <string>
 # include <map>
+# include <vector>
+# include <poll.h>
 # include "Client.hpp"
 # include "Channel.hpp"
 
@@ -20,6 +22,20 @@ class Server
 		std::map<int, Client *>			_clients;	// keyed by fd
 		std::map<std::string, Channel *>	_channels;	// keyed by name
 
+		// A: everything below is the single poll() loop and its plumbing.
+		std::vector<struct pollfd>		_pollFds;
+
+		void	setupListenSocket();
+		void	acceptClient();
+		bool	readFromClient(int fd);		// false => client must be dropped
+		void	writeToClient(int fd);
+		void	removeClient(int fd);
+		void	refreshPollEvents();		// arm/disarm POLLOUT per client
+
+		// TODO (B): replace this with a real dispatcher (parse + handler
+		// lookup). This is only the seam A hands complete lines to.
+		void	dispatchLine(Client &client, const std::string &line);
+
 		Server(const Server &other);
 		Server &operator=(const Server &other);
 
@@ -30,12 +46,7 @@ class Server
 		int					getPort() const;
 		const std::string	&getPassword() const;
 
-		void				start();	// TODO (A): socket + bind + listen +
-										// non-blocking setup, then the single
-										// poll() loop (accept / read / write /
-										// disconnect).
-		// TODO (A): acceptClient(), removeClient(int fd),
-		// TODO (A): handleReadable(Client&), handleWritable(Client&).
+		void				start();
 };
 
 #endif

@@ -1,5 +1,12 @@
 #include "Server.hpp"
+#include <sys/socket.h>
+#include <netinet/in.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <csignal>
+#include <cstring>
+#include <stdexcept>
+#include <iostream>
 
 Server::Server(int port, const std::string &password)
 	: _listenFd(-1), _port(port), _password(password)
@@ -28,15 +35,178 @@ const std::string	&Server::getPassword() const
 	return (_password);
 }
 
+void	Server::setupListenSocket()
+{
+	_listenFd = socket(AF_INET, SOCK_STREAM, 0);
+	if (_listenFd < 0)
+		throw std::runtime_error("socket() failed");
+
+	int opt = 1;
+	setsockopt(_listenFd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+	struct sockaddr_in addr;
+	std::memset(&addr, 0, sizeof(addr));
+	addr.sin_family = AF_INET;
+	addr.sin_addr.s_addr = INADDR_ANY;
+	addr.sin_port = htons(_port);
+
+	if (bind(_listenFd, reinterpret_cast<struct sockaddr *>(&addr), sizeof(addr)) < 0)
+		throw std::runtime_error("bind() failed");
+	if (listen(_listenFd, SOMAXCONN) < 0)
+		throw std::runtime_error("listen() failed");
+	if (fcntl(_listenFd, F_SETFL, O_NONBLOCK) < 0)
+		throw std::runtime_error("fcntl() failed");
+
+	struct pollfd listenPfd;
+	listenPfd.fd = _listenFd;
+	listenPfd.events = POLLIN;
+	listenPfd.revents = 0;
+	_pollFds.push_back(listenPfd);
+}
+
 void	Server::start()
 {
-	// TODO (A): create the listening socket (socket, setsockopt, bind, listen),
-	// TODO (A): set it non-blocking with fcntl(fd, F_SETFL, O_NONBLOCK),
-	// TODO (A): then run the single poll() loop:
-	// TODO (A):   - accept new clients,
-	// TODO (A):   - on POLLIN: recv, append to the client read buffer, extract
-	// TODO (A):     complete "\r\n" lines and hand each to the dispatcher (B),
-	// TODO (A):   - on POLLOUT: send from the client write buffer,
-	// TODO (A):   - handle disconnections (recv == 0) and errors (recv < 0).
-	// Reminder: never inspect errno to decide what to do after recv/send.
+	// send() on a socket the peer already closed would otherwise raise
+	// SIGPIPE and kill the whole server; the return value alone is enough.
+	signal(SIGPIPE, SIG_IGN);
+
+	setupListenSocket();
+	std::cout << "ircserv listening on port " << _port << std::endl;
+
+	while (true)
+	{
+		int ready = poll(&_pollFds[0], _pollFds.size(), -1);
+		if (ready < 0)
+			continue; // interrupted by a signal: retry, don't inspect errno
+
+		if (_pollFds[0].revents & POLLIN)
+			acceptClient();
+
+		std::vector<int> toRemove;
+		for (std::size_t i = 1; i < _pollFds.size(); ++i)
+		{
+			int		fd = _pollFds[i].fd;
+			short	revents = _pollFds[i].revents;
+
+			if (revents & POLLNVAL)
+			{
+				toRemove.push_back(fd);
+				continue;
+			}
+			// POLLHUP/POLLERR are folded into the same recv() attempt as
+			// POLLIN: recv()'s return value decides whether to drop the
+			// client, so a peer that sends a final line and immediately
+			// closes still gets that line read (and its reply flushed
+			// below) instead of being dropped unread.
+			if ((revents & (POLLIN | POLLHUP | POLLERR)) && !readFromClient(fd))
+			{
+				toRemove.push_back(fd);
+				continue;
+			}
+			if (revents & POLLOUT)
+				writeToClient(fd);
+		}
+
+		for (std::size_t i = 0; i < toRemove.size(); ++i)
+			removeClient(toRemove[i]);
+
+		refreshPollEvents();
+	}
+}
+
+void	Server::acceptClient()
+{
+	int fd = accept(_listenFd, NULL, NULL);
+	if (fd < 0)
+		return; // no pending connection after all, or a transient failure
+
+	if (fcntl(fd, F_SETFL, O_NONBLOCK) < 0)
+	{
+		close(fd);
+		return;
+	}
+
+	_clients[fd] = new Client(fd);
+
+	struct pollfd clientPfd;
+	clientPfd.fd = fd;
+	clientPfd.events = POLLIN;
+	clientPfd.revents = 0;
+	_pollFds.push_back(clientPfd);
+
+	std::cout << "client fd " << fd << " connected" << std::endl;
+}
+
+bool	Server::readFromClient(int fd)
+{
+	char	buf[4096];
+	ssize_t	n = recv(fd, buf, sizeof(buf), 0);
+
+	if (n <= 0)
+		return (false); // 0 = orderly shutdown, <0 = error: either way, drop it
+
+	Client &client = *_clients[fd];
+	client.appendToRead(buf, static_cast<std::size_t>(n));
+
+	std::string line;
+	while (client.extractLine(line))
+		dispatchLine(client, line);
+	return (true);
+}
+
+void	Server::writeToClient(int fd)
+{
+	Client &client = *_clients[fd];
+	const std::string &out = client.writeBuffer();
+
+	if (out.empty())
+		return;
+
+	ssize_t n = send(fd, out.data(), out.size(), 0);
+	if (n > 0)
+		client.consumeWrite(static_cast<std::size_t>(n));
+	// n <= 0 with POLLOUT already signalled: leave it for the next round
+	// rather than guessing from errno.
+}
+
+void	Server::removeClient(int fd)
+{
+	std::map<int, Client *>::iterator it = _clients.find(fd);
+	if (it != _clients.end())
+	{
+		delete it->second;
+		_clients.erase(it);
+	}
+
+	for (std::vector<struct pollfd>::iterator pit = _pollFds.begin();
+		pit != _pollFds.end(); ++pit)
+	{
+		if (pit->fd == fd)
+		{
+			_pollFds.erase(pit);
+			break;
+		}
+	}
+
+	close(fd);
+	std::cout << "client fd " << fd << " disconnected" << std::endl;
+}
+
+void	Server::refreshPollEvents()
+{
+	for (std::size_t i = 1; i < _pollFds.size(); ++i)
+	{
+		Client &client = *_clients[_pollFds[i].fd];
+		_pollFds[i].events = POLLIN;
+		if (client.hasPendingWrite())
+			_pollFds[i].events |= POLLOUT;
+	}
+}
+
+void	Server::dispatchLine(Client &client, const std::string &line)
+{
+	// TODO (B): parse `line` into command + params and route it to the real
+	// handlers (PASS/NICK/USER/PRIVMSG/...). For now, echo it back so the
+	// poll loop itself can be tested end-to-end with nc/irssi.
+	client.appendToWrite(line + "\r\n");
 }

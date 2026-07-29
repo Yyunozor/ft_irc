@@ -73,3 +73,24 @@ void	Client::appendToWrite(const std::string &data)
 {
 	_writeBuf += data;
 }
+
+bool	Client::extractLine(std::string &line)
+{
+	std::string::size_type pos = _readBuf.find("\r\n");
+
+	if (pos == std::string::npos)
+		return (false);
+	line = _readBuf.substr(0, pos);
+	_readBuf.erase(0, pos + 2);
+	return (true);
+}
+
+void	Client::consumeWrite(std::size_t n)
+{
+	_writeBuf.erase(0, n);
+}
+
+bool	Client::hasPendingWrite() const
+{
+	return (!_writeBuf.empty());
+}

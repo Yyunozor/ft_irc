@@ -47,8 +47,17 @@ class Client
 		void				appendToRead(const char *data, std::size_t n);
 		const std::string	&writeBuffer() const;
 		void				appendToWrite(const std::string &data);
-		// TODO (A): extract a complete "\r\n"-terminated command from _readBuf,
-		// TODO (A): consume bytes from _writeBuf once sent.
+
+		// Pops one complete "\r\n"-terminated command out of the read buffer
+		// (without the trailing CRLF) and erases it from the buffer.
+		// Returns false if no full line is available yet.
+		bool				extractLine(std::string &line);
+
+		// Erases the first n bytes of the write buffer (bytes actually sent).
+		void				consumeWrite(std::size_t n);
+
+		// Whether poll() should be asked for POLLOUT on this client's fd.
+		bool				hasPendingWrite() const;
 };
 
 #endif

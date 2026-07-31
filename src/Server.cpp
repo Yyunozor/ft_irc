@@ -203,10 +203,98 @@ void	Server::refreshPollEvents()
 	}
 }
 
+// Splits a raw line into an uppercase-insensitive command word and its
+// params. A leading ":" on a param means "rest of the line, spaces
+// included" (the IRC "trailing parameter" rule) — e.g. `PRIVMSG bob :hi
+// there` yields params = {"bob", "hi there"}.
+// TODO (B): this is deliberately minimal (no ":prefix" support, since
+// clients never send one); promote/replace it as the real parser grows.
+static void	parseLine(const std::string &line, std::string &command,
+	std::vector<std::string> &params)
+{
+	std::string::size_type pos = line.find(' ');
+
+	if (pos == std::string::npos)
+	{
+		command = line;
+		return;
+	}
+	command = line.substr(0, pos);
+
+	std::string rest = line.substr(pos + 1);
+	while (!rest.empty())
+	{
+		if (rest[0] == ':')
+		{
+			params.push_back(rest.substr(1));
+			break;
+		}
+		pos = rest.find(' ');
+		if (pos == std::string::npos)
+		{
+			params.push_back(rest);
+			break;
+		}
+		params.push_back(rest.substr(0, pos));
+		rest = rest.substr(pos + 1);
+	}
+}
+
 void	Server::dispatchLine(Client &client, const std::string &line)
 {
-	// TODO (B): parse `line` into command + params and route it to the real
-	// handlers (PASS/NICK/USER/PRIVMSG/...). For now, echo it back so the
-	// poll loop itself can be tested end-to-end with nc/irssi.
-	client.appendToWrite(line + "\r\n");
+	std::string					command;
+	std::vector<std::string>	params;
+
+	parseLine(line, command, params);
+
+	if (command == "JOIN")
+		handleJoin(client, params);
+	else if (command == "PART" || command == "KICK" || command == "INVITE"
+		|| command == "TOPIC" || command == "MODE")
+	{
+		// TODO (C): implement, following handleJoin() as a model — look up
+		// the channel via getOrCreateChannel()/_channels, mutate it, then
+		// channel->broadcast(...) the result.
+	}
+	else
+	{
+		// TODO (B): PASS/NICK/USER/PRIVMSG/NOTICE/PING/QUIT + numeric
+		// replies. Echo kept only so the poll loop stays testable meanwhile.
+		client.appendToWrite(line + "\r\n");
+	}
+}
+
+void	Server::handleJoin(Client &client, const std::vector<std::string> &params)
+{
+	if (params.empty())
+		return ; // TODO (B): numeric reply 461 ERR_NEEDMOREPARAMS
+
+	Channel *channel = getOrCreateChannel(params[0]);
+	channel->addMember(&client);
+
+	std::string nick = client.getNick().empty() ? "*" : client.getNick();
+	channel->broadcast(":" + nick + " JOIN " + params[0] + "\r\n");
+}
+
+Channel	*Server::getOrCreateChannel(const std::string &name)
+{
+	std::map<std::string, Channel *>::iterator it = _channels.find(name);
+
+	if (it != _channels.end())
+		return (it->second);
+
+	Channel *channel = new Channel(name);
+	_channels[name] = channel;
+	return (channel);
+}
+
+Client	*Server::findClientByNick(const std::string &nick)
+{
+	for (std::map<int, Client *>::iterator it = _clients.begin();
+		it != _clients.end(); ++it)
+	{
+		if (it->second->getNick() == nick)
+			return (it->second);
+	}
+	return (NULL);
 }

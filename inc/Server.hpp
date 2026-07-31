@@ -32,9 +32,17 @@ class Server
 		void	removeClient(int fd);
 		void	refreshPollEvents();		// arm/disarm POLLOUT per client
 
-		// TODO (B): replace this with a real dispatcher (parse + handler
-		// lookup). This is only the seam A hands complete lines to.
+		// B: parses a line into command + params and routes it.
+		// Only JOIN is wired to a real handler so far, as a working example
+		// for C to extend; PASS/NICK/USER/PRIVMSG/... still echo (TODO B),
+		// PART/KICK/INVITE/TOPIC/MODE are unimplemented (TODO C).
 		void	dispatchLine(Client &client, const std::string &line);
+		void	handleJoin(Client &client, const std::vector<std::string> &params);
+
+		// Shared lookups B/C's handlers need; A/B/C should not reach into
+		// _clients/_channels directly from outside Server.
+		Channel	*getOrCreateChannel(const std::string &name);
+		Client	*findClientByNick(const std::string &nick);
 
 		Server(const Server &other);
 		Server &operator=(const Server &other);

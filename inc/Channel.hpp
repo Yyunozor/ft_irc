@@ -40,9 +40,16 @@ class Channel
 		std::size_t					getUserLimit() const;
 		const std::set<Client *>	&getMembers() const;
 		const std::set<Client *>	&getOperators() const;
-		// TODO (C): addMember / removeMember, addOperator / removeOperator,
-		// TODO (C): isMember / isOperator, setTopic, setKey, setModes,
-		// TODO (C): broadcast a message to every member.
+
+		// Minimal membership + broadcast, enough for JOIN to work
+		// end-to-end. TODO (C): addOperator / removeOperator / isOperator,
+		// an invite list (_invited) + invite()/isInvited() for mode i,
+		// setTopic / setKey / setInviteOnly / setTopicRestricted /
+		// setUserLimit, and empty() so Server can drop empty channels.
+		void						addMember(Client *client);
+		void						removeMember(Client *client);
+		bool						isMember(Client *client) const;
+		void						broadcast(const std::string &msg, Client *except = NULL) const;
 };
 
 #endif

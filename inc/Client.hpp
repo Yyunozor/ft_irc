@@ -21,7 +21,16 @@ class Client
 		bool		_passValidated;	// B: PASS accepted
 		std::string	_nick;			// B
 		std::string	_user;			// B
+		std::string	_realname;		// B: the trailing param of USER
+		std::string	_host;			// B: the "host" part of the prefix
+		bool		_userReceived;	// B: USER seen (distinct from _user != "")
 		bool		_registered;	// B: PASS + NICK + USER all done
+
+		// B: a client that sent QUIT, or failed authentication, must not be
+		// destroyed on the spot — the poll() loop is still iterating over the
+		// pollfd array and over this very client's pending lines. It is
+		// flagged here and dropped by A at the end of the iteration.
+		bool		_quitting;
 
 		Client(const Client &other);
 		Client &operator=(const Client &other);
@@ -39,8 +48,22 @@ class Client
 		void				setNick(const std::string &nick);
 		const std::string	&getUser() const;
 		void				setUser(const std::string &user);
+		const std::string	&getRealname() const;
+		void				setRealname(const std::string &realname);
+		const std::string	&getHost() const;
+		void				setHost(const std::string &host);
+		bool				hasUserInfo() const;
+		void				setUserReceived(bool v);
 		bool				isRegistered() const;
 		void				setRegistered(bool v);
+
+		// "nick!user@host" — the prefix every message this client originates
+		// must carry, so other clients know who is speaking.
+		std::string			prefix() const;
+
+		// --- deferred disconnection (B sets, A acts on it) ---
+		bool				isQuitting() const;
+		void				setQuitting(bool v);
 
 		// --- buffers (A) ---
 		const std::string	&readBuffer() const;

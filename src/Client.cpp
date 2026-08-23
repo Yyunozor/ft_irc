@@ -94,3 +94,9 @@ bool	Client::hasPendingWrite() const
 {
 	return (!_writeBuf.empty());
 }
+
+void Client::setUser(const std::string &realname, const std::string &username)
+{
+	_username = username;
+	_realName = realname;
+}

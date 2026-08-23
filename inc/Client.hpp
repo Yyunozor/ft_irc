@@ -21,6 +21,8 @@ class Client
 		bool		_passValidated;	// B: PASS accepted
 		std::string	_nick;			// B
 		std::string	_user;			// B
+		std::string	_realName;
+		std::string _username;
 		bool		_registered;	// B: PASS + NICK + USER all done
 
 		Client(const Client &other);
@@ -58,6 +60,7 @@ class Client
 
 		// Whether poll() should be asked for POLLOUT on this client's fd.
 		bool				hasPendingWrite() const;
+		void				setUser(const std::string &realname, const std::string &username);
 };
 
 #endif

@@ -74,7 +74,7 @@ To check that fragmented packets are correctly reassembled, as described in the
 subject, send a single command in several pieces using ctrl+D between fragments:
 
 ```sh
-nc -C 127.0.0.1 6667
+nc -c 127.0.0.1 6667
 ```
 
 ## Technical choices

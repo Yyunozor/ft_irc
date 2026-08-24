@@ -21,6 +21,7 @@ class Channel
 		std::string			_key;				// mode k ("" = no key)
 		std::set<Client *>	_members;
 		std::set<Client *>	_operators;			// mode o
+		std::set<Client *>	_invited;			// for mode i
 		bool				_inviteOnly;		// mode i
 		bool				_topicRestricted;	// mode t
 		std::size_t			_userLimit;			// mode l (0 = no limit)
@@ -41,15 +42,30 @@ class Channel
 		const std::set<Client *>	&getMembers() const;
 		const std::set<Client *>	&getOperators() const;
 
-		// Minimal membership + broadcast, enough for JOIN to work
-		// end-to-end. TODO (C): addOperator / removeOperator / isOperator,
-		// an invite list (_invited) + invite()/isInvited() for mode i,
-		// setTopic / setKey / setInviteOnly / setTopicRestricted /
-		// setUserLimit, and empty() so Server can drop empty channels.
+		void						addOperator(Client *client);
+		void						removeOperator(Client *client);
+		bool						isOperator(Client *client) const;
+
+		bool						isInvited(Client *client) const;
+		void						invite(Client *client);
+
+		void						setKey(const std::string &key);
+		void						removeKey();
+		void						setInviteOnly();
+		void						removeInviteOnly();
+		void						setTopicRestricted();
+		void						removeTopicRestricted();
+		void						setTopic(const std::string &topic);
+		void						removeTopic();
+		void						setUserLimit(std::size_t limit);
+
 		void						addMember(Client *client);
 		void						removeMember(Client *client);
 		bool						isMember(Client *client) const;
 		void						broadcast(const std::string &msg, Client *except = NULL) const;
+
+		void						removeMembers();
+		bool						isEmpty() const;
 };
 
 #endif

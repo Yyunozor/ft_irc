@@ -20,7 +20,9 @@ class Client
 
 		bool		_passValidated;	// B: PASS accepted
 		std::string	_nick;			// B
-		std::string	_user;			// B
+		std::string	_user;			// B: set from USER, used as the "USER received" marker
+		std::string	_realName;
+		std::string	_username;
 		bool		_registered;	// B: PASS + NICK + USER all done
 
 		Client(const Client &other);
@@ -39,6 +41,7 @@ class Client
 		void				setNick(const std::string &nick);
 		const std::string	&getUser() const;
 		void				setUser(const std::string &user);
+		void				setUser(const std::string &realname, const std::string &username);
 		bool				isRegistered() const;
 		void				setRegistered(bool v);
 

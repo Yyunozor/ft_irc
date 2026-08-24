@@ -44,6 +44,17 @@ void	Client::setUser(const std::string &user)
 	_user = user;
 }
 
+void	Client::setUser(const std::string &realname, const std::string &username)
+{
+	_username = username;
+	_realName = realname;
+	// _user doubles as the "has USER been received" marker that
+	// isRegistered()'s PASS/NICK/USER completion check relies on; without
+	// this, registration silently never completes when USER arrives
+	// before NICK, since getUser() would stay empty forever.
+	_user = username;
+}
+
 bool	Client::isRegistered() const
 {
 	return (_registered);

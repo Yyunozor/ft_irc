@@ -57,8 +57,8 @@ void	Channel::addMember(Client *client)
 
 void	Channel::removeMember(Client *client)
 {
-	_members.erase(client);
 	_operators.erase(client);
+	_members.erase(client);
 }
 
 bool	Channel::isMember(Client *client) const
@@ -74,4 +74,86 @@ void	Channel::broadcast(const std::string &msg, Client *except) const
 		if (*it != except)
 			(*it)->appendToWrite(msg);
 	}
+}
+
+void	Channel::invite(Client *client)
+{
+	_invited.insert(client);
+}
+
+bool	Channel::isInvited(Client *client) const
+{
+	return (_invited.find(client) != _invited.end());
+}
+
+void	Channel::addOperator(Client *client)
+{
+	_operators.insert(client);
+}
+
+void	Channel::removeOperator(Client *client)
+{
+	_operators.erase(client);
+}
+
+bool	Channel::isOperator(Client *client) const
+{
+	return (_operators.find(client) != _operators.end());
+}
+
+void	Channel::setKey(const std::string &key)
+{
+	_key = key;
+}
+
+void	Channel::removeKey()
+{
+	_key.clear();
+}
+
+void	Channel::setTopic(const std::string &topic)
+{
+	_topic = topic;
+}
+
+void	Channel::removeTopic()
+{
+	_topic.clear();
+}
+
+void	Channel::setInviteOnly()
+{
+	_inviteOnly = true;
+}
+
+void	Channel::removeInviteOnly()
+{
+	_inviteOnly = false;
+}
+
+void	Channel::setTopicRestricted()
+{
+	_topicRestricted = true;
+}
+
+void	Channel::removeTopicRestricted()
+{
+	_topicRestricted = false;
+}
+
+void	Channel::setUserLimit(std::size_t limit)
+{
+	_userLimit = limit;
+}
+
+void	Channel::removeMembers()
+{
+	_members.clear();
+	_operators.clear();
+	_invited.clear();
+}
+
+bool	Channel::isEmpty() const
+{
+	return (_members.empty());
 }

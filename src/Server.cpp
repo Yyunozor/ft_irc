@@ -1,6 +1,5 @@
 #include "Server.hpp"
-#include "Client.hpp"
-#include "Channel.hpp"
+#include "Replies.hpp"
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
@@ -8,11 +7,9 @@
 #include <csignal>
 #include <cstring>
 #include <cstdlib>
+#include <cctype>
 #include <stdexcept>
 #include <iostream>
-#include <string>
-#include <map>
-#include <vector>
 
 Server::Server(int port, const std::string &password)
 	: _listenFd(-1), _port(port), _password(password)
@@ -160,7 +157,14 @@ bool	Server::readFromClient(int fd)
 
 	std::string line;
 	while (client.extractLine(line))
+	{
 		dispatchLine(client, line);
+		// QUIT, or a rejected password: stop consuming this client's pending
+		// lines and let the caller drop it. Anything still queued after a
+		// QUIT is by definition sent by a client that no longer exists.
+		if (client.isQuitting())
+			return (false);
+	}
 	return (true);
 }
 
@@ -184,6 +188,19 @@ void	Server::removeClient(int fd)
 	std::map<int, Client *>::iterator it = _clients.find(fd);
 	if (it != _clients.end())
 	{
+		// A client dropped for a protocol reason (rejected PASS, QUIT) still
+		// has its last numeric sitting in the write buffer, and the poll()
+		// loop skips POLLOUT for a client it is about to remove. One
+		// best-effort send() before close() is what makes that reply
+		// actually arrive; the return value is deliberately ignored, since
+		// errno must not drive the logic here.
+		const std::string &pending = it->second->writeBuffer();
+		if (!pending.empty())
+			(void)send(fd, pending.data(), pending.size(), 0);
+
+		// Channels hold raw Client*: unless the client is evicted from every
+		// one of them first, the next broadcast() walks freed memory.
+		removeFromAllChannels(it->second);
 		delete it->second;
 		_clients.erase(it);
 	}
@@ -250,82 +267,378 @@ static void	parseLine(const std::string &line, std::string &command,
 	}
 }
 
+// IRC command names are case-insensitive ("nick" == "NICK"), so the router
+// compares against a single canonical form.
+static std::string	toUpper(const std::string &s)
+{
+	std::string	out = s;
+
+	for (std::string::size_type i = 0; i < out.size(); ++i)
+		out[i] = static_cast<char>(std::toupper(static_cast<unsigned char>(out[i])));
+	return (out);
+}
+
 void	Server::dispatchLine(Client &client, const std::string &line)
 {
-	std::string					command;
+	std::string					rawCommand;
 	std::vector<std::string>	params;
 
-	parseLine(line, command, params);
+	parseLine(line, rawCommand, params);
+	if (rawCommand.empty())
+		return;
 
-	if (command == "JOIN")
+	std::string	command = toUpper(rawCommand);
+
+	// Commands accepted before registration completes.
+	if (command == "PASS")
+		return (handlePass(client, params));
+	if (command == "NICK")
+		return (handleNick(client, params));
+	if (command == "USER")
+		return (handleUser(client, params));
+	if (command == "QUIT")
+		return (handleQuit(client, params));
+	if (command == "PING")
+		return (handlePing(client, params));
+	// A PONG is the client answering us; nothing to reply to it.
+	if (command == "PONG")
+		return;
+	// irssi opens with "CAP LS 302" to negotiate capabilities. We support
+	// none, and answering 421 makes some clients stall waiting for CAP END,
+	// so it is silently ignored.
+	if (command == "CAP")
+		return;
+
+	if (!client.isRegistered())
+	{
+		client.appendToWrite(irc::errNotRegistered(client.getNick()));
+		return;
+	}
+
+	if (command == "PRIVMSG")
+		handlePrivmsg(client, params, false);
+	else if (command == "NOTICE")
+		handlePrivmsg(client, params, true);
+	else if (command == "JOIN")
 		handleJoin(client, params);
 	else if (command == "PART")
 		handlePart(client, params);
-	else if (command == "INVITE")
-		handleInvite(client, params);
 	else if (command == "KICK")
 		handleKick(client, params);
+	else if (command == "INVITE")
+		handleInvite(client, params);
 	else if (command == "TOPIC")
 		handleTopic(client, params);
 	else if (command == "MODE")
 		handleMode(client, params);
-	else if (command == "PASS")
-		handlePASS(client, params);
-	else if (command == "NICK")
-		handleNICK(client, params);
-	else if (command == "USER")
-		handleUSER(client, params);
-	else if (command == "PING")
-		handlePING(client, params);
-	else if (command == "PRIVMSG")
-		handlePrivmsg(client, params);
 	else
-	{
-		// TODO (B): NOTICE/QUIT + numeric replies. Echo kept only so the
-		// poll loop stays testable meanwhile.
-		client.appendToWrite(line + "\r\n");
-	}
+		client.appendToWrite(irc::errUnknownCommand(client.getNick(), rawCommand));
 }
 
+/*
+** PASS <password>
+** Must arrive before registration completes. Getting it wrong is fatal for
+** the connection: the client is told 464 and dropped, rather than being left
+** to guess forever.
+*/
+void	Server::handlePass(Client &client, const std::vector<std::string> &params)
+{
+	if (client.isRegistered())
+	{
+		client.appendToWrite(irc::errAlreadyRegistered(client.getNick()));
+		return;
+	}
+	if (params.empty())
+	{
+		client.appendToWrite(irc::errNeedMoreParams(client.getNick(), "PASS"));
+		return;
+	}
+	if (params[0] != _password)
+	{
+		client.appendToWrite(irc::errPasswdMismatch(client.getNick()));
+		disconnect(client, "Bad password");
+		return;
+	}
+	client.setPassValidated(true);
+}
+
+/*
+** RFC 2812 grammar: a nickname starts with a letter or one of []\`_^{|},
+** continues with those plus digits and '-', and is at most 9 characters.
+*/
+static bool	isValidNick(const std::string &nick)
+{
+	static const std::string	special = "[]\\`_^{|}";
+
+	if (nick.empty() || nick.size() > 9)
+		return (false);
+	if (!std::isalpha(static_cast<unsigned char>(nick[0]))
+		&& special.find(nick[0]) == std::string::npos)
+		return (false);
+	for (std::string::size_type i = 1; i < nick.size(); ++i)
+	{
+		if (!std::isalnum(static_cast<unsigned char>(nick[i]))
+			&& special.find(nick[i]) == std::string::npos
+			&& nick[i] != '-')
+			return (false);
+	}
+	return (true);
+}
+
+/*
+** NICK <nickname>
+** Also handles a rename after registration, which must be announced to every
+** channel the client shares — otherwise other clients keep showing the old
+** nick and later messages look like they come from a stranger.
+*/
+void	Server::handleNick(Client &client, const std::vector<std::string> &params)
+{
+	if (params.empty() || params[0].empty())
+	{
+		client.appendToWrite(irc::errNoNicknameGiven(client.getNick()));
+		return;
+	}
+
+	const std::string	&wanted = params[0];
+
+	if (!isValidNick(wanted))
+	{
+		client.appendToWrite(irc::errErroneusNickname(client.getNick(), wanted));
+		return;
+	}
+
+	Client	*holder = findClientByNick(wanted);
+	if (holder != NULL && holder != &client)
+	{
+		client.appendToWrite(irc::errNicknameInUse(client.getNick(), wanted));
+		return;
+	}
+	if (holder == &client)
+		return; // same nick, nothing to announce
+
+	if (client.isRegistered())
+	{
+		std::string	announce = irc::fromUser(client.prefix(), "NICK :" + wanted);
+
+		client.appendToWrite(announce);
+		for (std::map<std::string, Channel *>::iterator it = _channels.begin();
+			it != _channels.end(); ++it)
+		{
+			if (it->second->isMember(&client))
+				it->second->broadcast(announce, &client);
+		}
+		client.setNick(wanted);
+		return;
+	}
+
+	client.setNick(wanted);
+	completeRegistration(client);
+}
+
+/*
+** USER <username> <mode> <unused> :<realname>
+** The middle two parameters are vestigial in RFC 2812; only the first and
+** the trailing realname carry information for us.
+*/
+void	Server::handleUser(Client &client, const std::vector<std::string> &params)
+{
+	if (client.isRegistered())
+	{
+		client.appendToWrite(irc::errAlreadyRegistered(client.getNick()));
+		return;
+	}
+	if (params.size() < 4)
+	{
+		client.appendToWrite(irc::errNeedMoreParams(client.getNick(), "USER"));
+		return;
+	}
+
+	client.setUser(params[0]);
+	client.setRealname(params[3]);
+	client.setUserReceived(true);
+	completeRegistration(client);
+}
+
+/*
+** Registration needs all three of PASS, NICK and USER. Whichever arrives
+** last triggers the welcome burst, so the order the client picks does not
+** matter — irssi sends all three in one packet.
+*/
+void	Server::completeRegistration(Client &client)
+{
+	if (client.isRegistered())
+		return;
+	if (client.getNick().empty() || !client.hasUserInfo())
+		return;
+
+	// NICK/USER complete but no valid PASS: refuse rather than let the client
+	// think it is connected to an open server.
+	if (!client.isPassValidated())
+	{
+		client.appendToWrite(irc::errPasswdMismatch(client.getNick()));
+		disconnect(client, "Bad password");
+		return;
+	}
+
+	client.setRegistered(true);
+
+	const std::string	&nick = client.getNick();
+	client.appendToWrite(irc::welcome(nick, client.prefix()));
+	client.appendToWrite(irc::yourHost(nick));
+	client.appendToWrite(irc::created(nick));
+	client.appendToWrite(irc::myInfo(nick));
+}
+
+/*
+** PRIVMSG/NOTICE <target> :<text>
+** `isNotice` suppresses every error reply: RFC 2812 forbids answering a
+** NOTICE with an error, so that automated senders cannot ping-pong failures.
+*/
+void	Server::handlePrivmsg(Client &client, const std::vector<std::string> &params,
+	bool isNotice)
+{
+	const std::string	verb = isNotice ? "NOTICE" : "PRIVMSG";
+
+	if (params.empty())
+	{
+		if (!isNotice)
+			client.appendToWrite(irc::errNoRecipient(client.getNick(), verb));
+		return;
+	}
+	if (params.size() < 2 || params[1].empty())
+	{
+		if (!isNotice)
+			client.appendToWrite(irc::errNoTextToSend(client.getNick()));
+		return;
+	}
+
+	const std::string	&target = params[0];
+	std::string			body = verb + " " + target + " :" + params[1];
+
+	if (target[0] == '#' || target[0] == '&')
+	{
+		Channel	*channel = findChannel(target);
+
+		if (channel == NULL)
+		{
+			if (!isNotice)
+				client.appendToWrite(irc::errNoSuchChannel(client.getNick(), target));
+			return;
+		}
+		// Refusing non-members keeps a client from shouting into a room it
+		// never joined, which is what 404 exists for.
+		if (!channel->isMember(&client))
+		{
+			if (!isNotice)
+				client.appendToWrite(irc::errCannotSendToChan(client.getNick(), target));
+			return;
+		}
+		channel->broadcast(irc::fromUser(client.prefix(), body), &client);
+		return;
+	}
+
+	Client	*receiver = findClientByNick(target);
+	if (receiver == NULL)
+	{
+		if (!isNotice)
+			client.appendToWrite(irc::errNoSuchNick(client.getNick(), target));
+		return;
+	}
+	receiver->appendToWrite(irc::fromUser(client.prefix(), body));
+}
+
+/*
+** PING <token>
+** Answered with the same token so the client can match request to reply.
+*/
+void	Server::handlePing(Client &client, const std::vector<std::string> &params)
+{
+	std::string	token = params.empty() ? std::string(SERVER_NAME) : params[0];
+
+	client.appendToWrite(":" SERVER_NAME " PONG " SERVER_NAME " :" + token + "\r\n");
+}
+
+void	Server::handleQuit(Client &client, const std::vector<std::string> &params)
+{
+	disconnect(client, params.empty() ? "Client quit" : params[0]);
+}
+
+void	Server::disconnect(Client &client, const std::string &reason)
+{
+	if (client.isQuitting())
+		return;
+
+	std::string	announce = irc::fromUser(client.prefix(), "QUIT :" + reason);
+
+	for (std::map<std::string, Channel *>::iterator it = _channels.begin();
+		it != _channels.end(); ++it)
+	{
+		if (it->second->isMember(&client))
+			it->second->broadcast(announce, &client);
+	}
+	client.setQuitting(true);
+}
+
+/*
+** JOIN <channel>[ <key>]
+** The channel is created on the fly if it does not exist yet, and its
+** creator becomes its first operator -- otherwise a brand new channel would
+** have nobody able to ever MODE/KICK/INVITE in it. Invite-only, key and
+** user-limit gates only apply to a channel that already exists: a freshly
+** created one has none of those set yet.
+*/
 void	Server::handleJoin(Client &client, const std::vector<std::string> &params)
 {
 	if (params.empty())
 	{
-		client.appendToWrite("ERROR 461: JOIN command requires 1 parameter: <channel>\r\n");
+		client.appendToWrite(irc::errNeedMoreParams(client.getNick(), "JOIN"));
 		return;
 	}
 
-	Channel *channel = getOrCreateChannel(&client, params[0]);
+	const std::string	&name = params[0];
+	bool				isNewChannel = (findChannel(name) == NULL);
+	Channel				*channel = getOrCreateChannel(name);
 
-	if (channel->isInviteOnly() && !channel->isInvited(&client))
+	if (isNewChannel)
 	{
-		client.appendToWrite("ERROR 473: Cannot join channel " + params[0] + ", invite only\r\n");
-		return;
+		channel->addOperator(&client);
 	}
-
-	// A channel key is optional on the wire (plain "JOIN #chan" is the
-	// common case), so params[1] may not exist -- only enforce a match
-	// when the channel actually has a key set.
-	const std::string key = (params.size() > 1) ? params[1] : "";
-	if (!channel->getKey().empty() && key != channel->getKey())
+	else
 	{
-		client.appendToWrite("ERROR 475: Cannot join channel " + params[0] + ", incorrect key\r\n");
-		return;
-	}
+		if (channel->isInviteOnly() && !channel->isInvited(&client))
+		{
+			client.appendToWrite(irc::errInviteOnlyChan(client.getNick(), name));
+			return;
+		}
 
-	if (channel->getUserLimit() > 0 && channel->getMembers().size() >= channel->getUserLimit())
-	{
-		client.appendToWrite("ERROR 471: Cannot join channel " + params[0] + ", channel is full\r\n");
-		return;
+		// A channel key is optional on the wire (plain "JOIN #chan" is the
+		// common case), so params[1] may not exist -- only enforce a match
+		// when the channel actually has a key set.
+		const std::string	key = (params.size() > 1) ? params[1] : "";
+		if (!channel->getKey().empty() && key != channel->getKey())
+		{
+			client.appendToWrite(irc::errBadChannelKey(client.getNick(), name));
+			return;
+		}
+
+		if (channel->getUserLimit() > 0
+			&& channel->getMembers().size() >= channel->getUserLimit())
+		{
+			client.appendToWrite(irc::errChannelIsFull(client.getNick(), name));
+			return;
+		}
 	}
 
 	channel->addMember(&client);
 
-	std::string nick = client.getNick().empty() ? "*" : client.getNick();
-	channel->broadcast(":" + nick + " JOIN " + params[0] + "\r\n");
+	// Full "nick!user@host" prefix, not just the nick: a real client matches
+	// the JOIN against its own prefix to know the join is its own, and needs
+	// user@host to populate the member list. Broadcast to everyone including
+	// the joiner — the joiner's own JOIN is its confirmation.
+	channel->broadcast(irc::fromUser(client.prefix(), "JOIN " + name));
 }
 
-Channel	*Server::getOrCreateChannel(Client *client, const std::string &name)
+Channel	*Server::getOrCreateChannel(const std::string &name)
 {
 	std::map<std::string, Channel *>::iterator it = _channels.find(name);
 
@@ -334,9 +647,17 @@ Channel	*Server::getOrCreateChannel(Client *client, const std::string &name)
 
 	Channel *channel = new Channel(name);
 	_channels[name] = channel;
-	channel->addOperator(client);
 
 	return (channel);
+}
+
+Channel	*Server::findChannel(const std::string &name)
+{
+	std::map<std::string, Channel *>::iterator it = _channels.find(name);
+
+	if (it == _channels.end())
+		return (NULL);
+	return (it->second);
 }
 
 Client	*Server::findClientByNick(const std::string &nick)
@@ -350,6 +671,18 @@ Client	*Server::findClientByNick(const std::string &nick)
 	return (NULL);
 }
 
+void	Server::removeFromAllChannels(Client *client)
+{
+	for (std::map<std::string, Channel *>::iterator it = _channels.begin();
+		it != _channels.end(); ++it)
+		it->second->removeMember(client);
+}
+
+/*
+** Empty channels are dropped here, after PART/KICK: unlike disconnection
+** (removeFromAllChannels), these are the two commands that can legitimately
+** empty a channel while the caller already knows which one.
+*/
 void	Server::dropChannelIfEmpty(Channel *channel)
 {
 	if (!channel->isEmpty())
@@ -358,81 +691,27 @@ void	Server::dropChannelIfEmpty(Channel *channel)
 	delete channel;
 }
 
-void	Server::handleInvite(Client &client, const std::vector<std::string> &params)
-{
-	if (params.size() < 2)
-	{
-		error("ERROR 461: INVITE command requires 2 parameters: <nick> <channel>");
-		return;
-	}
-
-	const std::string &targetNick = params[0];
-	const std::string &channelName = params[1];
-
-	std::map<std::string, Channel *>::iterator it = _channels.find(channelName);
-	if (it == _channels.end())
-	{
-		error("ERROR 403: No such channel");
-		return;
-	}
-
-	Channel *channel = it->second;
-
-	if (!channel->isOperator(&client))
-	{
-		error("ERROR 482: You're not a channel operator");
-		return;
-	}
-
-	Client *target = findClientByNick(targetNick);
-	if (!target)
-	{
-		error("ERROR 401: No such nick/channel");
-		return;
-	}
-
-	if (channel->isMember(target))
-	{
-		error("ERROR 443: User is already in the channel");
-		return;
-	}
-
-	if (channel->isInvited(target))
-	{
-		error("ERROR 443: User is already invited to the channel");
-		return;
-	}
-
-	channel->invite(target);
-	target->appendToWrite(":" + client.getNick() + " INVITE " + target->getNick() + " :" + channel->getName() + "\r\n");
-}
-
 void	Server::handlePart(Client &client, const std::vector<std::string> &params)
 {
 	if (params.empty())
 	{
-		error("ERROR 461: PART command requires 1 parameter: <channel>");
+		client.appendToWrite(irc::errNeedMoreParams(client.getNick(), "PART"));
 		return;
 	}
 
-	const std::string &channelName = params[0];
-
-	std::map<std::string, Channel *>::iterator it = _channels.find(channelName);
-	if (it == _channels.end())
+	Channel	*channel = findChannel(params[0]);
+	if (channel == NULL)
 	{
-		error("ERROR 403: No such channel");
+		client.appendToWrite(irc::errNoSuchChannel(client.getNick(), params[0]));
 		return;
 	}
-
-	Channel *channel = it->second;
-
 	if (!channel->isMember(&client))
 	{
-		error("ERROR 442: You're not a member of this channel");
+		client.appendToWrite(irc::errNotOnChannel(client.getNick(), params[0]));
 		return;
 	}
 
-	channel->broadcast(":" + client.getNick() + " PART " + channel->getName() + "\r\n");
+	channel->broadcast(irc::fromUser(client.prefix(), "PART " + channel->getName()));
 	channel->removeMember(&client);
 	dropChannelIfEmpty(channel);
 }
@@ -441,120 +720,171 @@ void	Server::handleKick(Client &client, const std::vector<std::string> &params)
 {
 	if (params.size() < 2)
 	{
-		error("ERROR 461: KICK command requires 2 parameters: <channel> <user>");
+		client.appendToWrite(irc::errNeedMoreParams(client.getNick(), "KICK"));
 		return;
 	}
 
-	const std::string &channelName = params[0];
-	const std::string &targetNick = params[1];
-
-	std::map<std::string, Channel *>::iterator it = _channels.find(channelName);
-	if (it == _channels.end())
+	Channel	*channel = findChannel(params[0]);
+	if (channel == NULL)
 	{
-		error("ERROR 403: No such channel");
+		client.appendToWrite(irc::errNoSuchChannel(client.getNick(), params[0]));
 		return;
 	}
-
-	Channel *channel = it->second;
-
 	if (!channel->isOperator(&client))
 	{
-		error("ERROR 482: You're not a channel operator");
+		client.appendToWrite(irc::errChanOPrivsNeeded(client.getNick(), params[0]));
 		return;
 	}
 
-	Client *target = findClientByNick(targetNick);
-	if (!target || !channel->isMember(target))
+	Client	*target = findClientByNick(params[1]);
+	if (target == NULL || !channel->isMember(target))
 	{
-		error("ERROR 441: User not in channel");
+		client.appendToWrite(irc::errUserNotInChannel(client.getNick(), params[1], params[0]));
 		return;
 	}
 
-	channel->broadcast(":" + client.getNick() + " KICK " + channel->getName() + " " + target->getNick() + "\r\n");
+	channel->broadcast(irc::fromUser(client.prefix(),
+		"KICK " + channel->getName() + " " + target->getNick()));
 	channel->removeMember(target);
 	dropChannelIfEmpty(channel);
+}
+
+void	Server::handleInvite(Client &client, const std::vector<std::string> &params)
+{
+	if (params.size() < 2)
+	{
+		client.appendToWrite(irc::errNeedMoreParams(client.getNick(), "INVITE"));
+		return;
+	}
+
+	const std::string	&targetNick = params[0];
+	const std::string	&channelName = params[1];
+
+	Channel	*channel = findChannel(channelName);
+	if (channel == NULL)
+	{
+		client.appendToWrite(irc::errNoSuchChannel(client.getNick(), channelName));
+		return;
+	}
+	if (!channel->isMember(&client))
+	{
+		client.appendToWrite(irc::errNotOnChannel(client.getNick(), channelName));
+		return;
+	}
+	if (!channel->isOperator(&client))
+	{
+		client.appendToWrite(irc::errChanOPrivsNeeded(client.getNick(), channelName));
+		return;
+	}
+
+	Client	*target = findClientByNick(targetNick);
+	if (target == NULL)
+	{
+		client.appendToWrite(irc::errNoSuchNick(client.getNick(), targetNick));
+		return;
+	}
+	if (channel->isMember(target))
+	{
+		client.appendToWrite(irc::errUserOnChannel(client.getNick(), targetNick, channelName));
+		return;
+	}
+
+	channel->invite(target);
+	client.appendToWrite(irc::rplInviting(client.getNick(), channelName, targetNick));
+	target->appendToWrite(irc::fromUser(client.prefix(), "INVITE " + targetNick + " " + channelName));
 }
 
 void	Server::handleTopic(Client &client, const std::vector<std::string> &params)
 {
 	if (params.empty())
 	{
-		error("ERROR 461: TOPIC command requires 1 parameter: <channel>");
+		client.appendToWrite(irc::errNeedMoreParams(client.getNick(), "TOPIC"));
 		return;
 	}
 
-	const std::string &channelName = params[0];
-
-	std::map<std::string, Channel *>::iterator it = _channels.find(channelName);
-	if (it == _channels.end())
+	Channel	*channel = findChannel(params[0]);
+	if (channel == NULL)
 	{
-		error("ERROR 403: No such channel");
+		client.appendToWrite(irc::errNoSuchChannel(client.getNick(), params[0]));
 		return;
 	}
-
-	Channel *channel = it->second;
-
 	if (!channel->isMember(&client))
 	{
-		error("ERROR 442: You're not a member of this channel");
-		return;
-	}
-
-	if (channel->isTopicRestricted() && !channel->isOperator(&client))
-	{
-		error("ERROR 482: You're not a channel operator");
+		client.appendToWrite(irc::errNotOnChannel(client.getNick(), params[0]));
 		return;
 	}
 
 	if (params.size() == 1)
 	{
-		client.appendToWrite(":" + channel->getName() + " : " + channel->getTopic() + "\r\n");
+		if (channel->getTopic().empty())
+			client.appendToWrite(irc::rplNoTopic(client.getNick(), channel->getName()));
+		else
+			client.appendToWrite(irc::rplTopic(client.getNick(), channel->getName(), channel->getTopic()));
+		return;
 	}
-	else
+
+	if (channel->isTopicRestricted() && !channel->isOperator(&client))
 	{
-		channel->setTopic(params[1]);
-		channel->broadcast(":" + client.getNick() + " TOPIC " + channel->getName() + " :" + params[1] + "\r\n");
+		client.appendToWrite(irc::errChanOPrivsNeeded(client.getNick(), params[0]));
+		return;
 	}
+
+	channel->setTopic(params[1]);
+	channel->broadcast(irc::fromUser(client.prefix(),
+		"TOPIC " + channel->getName() + " :" + params[1]));
 }
 
+/*
+** MODE <channel> [<modestring> [<arg>]]
+** Only the single-flag form is handled (e.g. "MODE #chan +l 10"), which
+** covers every mode the subject requires (i t k o l); RFC 2812 also allows
+** several flags in one modestring, deliberately not supported here.
+*/
 void	Server::handleMode(Client &client, const std::vector<std::string> &params)
 {
-	if (params.size() < 1)
+	if (params.empty())
 	{
-		error("ERROR 461: MODE command requires at least 1 parameter: <channel> [<mode>]");
-		return ;
+		client.appendToWrite(irc::errNeedMoreParams(client.getNick(), "MODE"));
+		return;
 	}
 
-	const std::string &channelName = params[0];
-	std::map<std::string, Channel *>::iterator it = _channels.find(channelName);
-
-	if (!client.isRegistered())
+	Channel	*channel = findChannel(params[0]);
+	if (channel == NULL)
 	{
-		error("ERROR 451: MODE command can only be used by registered clients");
-		return ;
+		client.appendToWrite(irc::errNoSuchChannel(client.getNick(), params[0]));
+		return;
 	}
-	if (it == _channels.end())
-	{
-		error("ERROR 403: MODE command can only be used for existing channels");
-		return ;
-	}
-	Channel *channel = it->second;
 	if (!channel->isMember(&client))
 	{
-		error("ERROR 442: MODE command can only be used by channel members");
-		return ;
+		client.appendToWrite(irc::errNotOnChannel(client.getNick(), params[0]));
+		return;
 	}
+
 	if (params.size() < 2)
-		return ; // "MODE #chan" with no flag: nothing to change here
+	{
+		// "MODE #chan" with no flag: report the current modes instead of
+		// changing anything.
+		std::string	modes = "+";
+		if (channel->isInviteOnly())
+			modes += "i";
+		if (channel->isTopicRestricted())
+			modes += "t";
+		if (!channel->getKey().empty())
+			modes += "k";
+		if (channel->getUserLimit() > 0)
+			modes += "l";
+		client.appendToWrite(irc::rplChannelModeIs(client.getNick(), channel->getName(), modes));
+		return;
+	}
 
 	if (!channel->isOperator(&client))
 	{
-		error("ERROR 482: MODE command can only be used by channel operators");
-		return ;
+		client.appendToWrite(irc::errChanOPrivsNeeded(client.getNick(), params[0]));
+		return;
 	}
 
-	const std::string &mode = params[1];
-	std::string arg;
+	const std::string	&mode = params[1];
+	std::string			arg;
 	if (params.size() > 2)
 		arg = params[2];
 
@@ -562,14 +892,14 @@ void	Server::handleMode(Client &client, const std::vector<std::string> &params)
 	{
 		if (arg.empty())
 		{
-			error("ERROR 461: MODE +o/-o requires a target nickname");
-			return ;
+			client.appendToWrite(irc::errNeedMoreParams(client.getNick(), "MODE"));
+			return;
 		}
 		Client *target = findClientByNick(arg);
-		if (!target || !channel->isMember(target))
+		if (target == NULL || !channel->isMember(target))
 		{
-			error("ERROR 441: User not in channel");
-			return ;
+			client.appendToWrite(irc::errUserNotInChannel(client.getNick(), arg, params[0]));
+			return;
 		}
 		if (mode == "+o")
 			channel->addOperator(target);
@@ -588,8 +918,8 @@ void	Server::handleMode(Client &client, const std::vector<std::string> &params)
 	{
 		if (arg.empty())
 		{
-			error("ERROR 461: MODE +k requires a key");
-			return ;
+			client.appendToWrite(irc::errNeedMoreParams(client.getNick(), "MODE"));
+			return;
 		}
 		channel->setKey(arg);
 	}
@@ -599,8 +929,8 @@ void	Server::handleMode(Client &client, const std::vector<std::string> &params)
 	{
 		if (arg.empty())
 		{
-			error("ERROR 461: MODE +l requires a limit");
-			return ;
+			client.appendToWrite(irc::errNeedMoreParams(client.getNick(), "MODE"));
+			return;
 		}
 		channel->setUserLimit(static_cast<std::size_t>(std::atoi(arg.c_str())));
 	}
@@ -608,128 +938,12 @@ void	Server::handleMode(Client &client, const std::vector<std::string> &params)
 		channel->setUserLimit(0);
 	else
 	{
-		error("ERROR 472: Unknown mode " + mode);
-		return ;
+		client.appendToWrite(irc::errUnknownMode(client.getNick(), mode));
+		return;
 	}
 
-	std::string msg = ":" + client.getNick() + " MODE " + channel->getName() + " " + mode;
+	std::string	announce = "MODE " + channel->getName() + " " + mode;
 	if (!arg.empty())
-		msg += " " + arg;
-	msg += "\r\n";
-	channel->broadcast(msg);
-}
-
-void	Server::handlePASS(Client &client, const std::vector<std::string> &params)
-{
-	if (params.empty())
-	{
-		error("ERROR 461: PASS command requires 1 parameter: <password>");
-		return;
-	}
-
-	const std::string &password = params[0];
-
-	if (password != _password)
-	{
-		error("ERROR 464: Password incorrect");
-		return;
-	}
-
-	client.setPassValidated(true);
-}
-
-void	Server::error(const std::string &msg)
-{
-	std::cerr << "Error: " << msg << std::endl;
-}
-
-void	Server::handleNICK(Client &client, const std::vector<std::string> &params)
-{
-	if (params.empty())
-	{
-		error("ERROR 431: NICK command requires 1 parameter: <nickname>");
-		return;
-	}
-
-	const std::string &newNick = params[0];
-
-	Client *existingClient = findClientByNick(newNick);
-	if (existingClient && existingClient != &client)
-	{
-		error("ERROR 433: Nickname is already in use");
-		return;
-	}
-
-	client.setNick(newNick);
-
-	if (client.isPassValidated() && !client.getUser().empty())
-	{
-		client.setRegistered(true);
-		client.appendToWrite("Welcome to the IRC server, " + newNick + "!\r\n");
-	}
-}
-
-void	Server::handleUSER(Client &client, const std::vector<std::string> &params)
-{
-	if (params.size() < 3)
-	{
-		error("ERROR 461: USER command requires 3 parameters: <username> <servername> <realname>");
-		return;
-	}
-
-	client.setUser(params[0], params[2]);
-	if (client.isPassValidated() && !client.getNick().empty())
-	{
-		client.setRegistered(true);
-		client.appendToWrite("Welcome to the IRC server, " + client.getNick() + "!\r\n");
-	}
-}
-
-void	Server::handlePING(Client &client, const std::vector<std::string> &params)
-{
-	if (params.empty())
-	{
-		error("ERROR 409: PING command requires 1 parameter: <token>");
-		return;
-	}
-
-	const std::string &token = params[0];
-	client.appendToWrite("PONG " + token + "\r\n");
-}
-
-void	Server::handlePrivmsg(Client &client, const std::vector<std::string> &params)
-{
-	if (params.size() < 2)
-	{
-		error("ERROR 461: PRIVMSG command requires 2 parameters: <target> <message>");
-		return;
-	}
-
-	const std::string &target = params[0];
-	const std::string &message = params[1];
-
-	Client *targetClient = findClientByNick(target);
-	if (targetClient)
-	{
-		targetClient->appendToWrite(":" + client.getNick() + " PRIVMSG " + target + " :" + message + "\r\n");
-	}
-	else
-	{
-		std::map<std::string, Channel *>::iterator it = _channels.find(target);
-		if (it != _channels.end())
-		{
-			Channel *channel = it->second;
-			if (!channel->isMember(&client))
-			{
-				error("ERROR 404: Cannot send to channel, you are not a member");
-				return;
-			}
-			channel->broadcast(":" + client.getNick() + " PRIVMSG " + target + " :" + message + "\r\n", &client);
-		}
-		else
-		{
-			error("ERROR 401: No such nick/channel");
-			return;
-		}
-	}
+		announce += " " + arg;
+	channel->broadcast(irc::fromUser(client.prefix(), announce));
 }

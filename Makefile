@@ -40,7 +40,7 @@ ifeq ($(DEBUG), 1)
 	LDFLAGS		+= -fsanitize=address,undefined
 endif
 
-SRCS		= main.cpp Server.cpp Client.cpp Channel.cpp
+SRCS		= $(notdir $(wildcard $(SRCDIR)/*.cpp))
 OBJS		= $(addprefix $(OBJDIR)/, $(SRCS:.cpp=.o))
 DEPS		= $(OBJS:.o=.d)
 

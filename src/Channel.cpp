@@ -81,42 +81,59 @@ void	Channel::invite(Client *client)
 	_invited.insert(client);
 }
 
-bool	Channel::isInvited(Client *client) const
+bool 	Channel::isInvited(Client *client) const
 {
-	return (_invited.find(client) != _invited.end());
+	std::set<Client *>::const_iterator it = _invited.find(client);
+	if (it != _invited.end())
+		return (true);
+	else
+		return (false);
 }
 
-void	Channel::addOperator(Client *client)
+/*
+bool	Channel::isMember(Client *client) const
 {
-	_operators.insert(client);
-}
+	std::set<Client *>::const_iterator it = _members.find(client);
+	if (it != _members.end())
+		return (true);
+	else
+		return (false);
+}*/
 
-void	Channel::removeOperator(Client *client)
+void Channel::removeOperator(Client *client)
 {
 	_operators.erase(client);
 }
 
-bool	Channel::isOperator(Client *client) const
+bool 	Channel::isOperator(Client *client) const
 {
-	return (_operators.find(client) != _operators.end());
+	std::set <Client *>::iterator it = _operators.find(client);
+	if(it != _operators.end())
+		return true;
+	return false;
 }
 
-void	Channel::setKey(const std::string &key)
+void 	Channel::addOperator(Client *client)
 {
-	_key = key;
+	_operators.insert(client);
 }
 
-void	Channel::removeKey()
+void Channel::setKey(const std::string &key)
+{
+    _key = key;
+}
+
+void Channel::removeKey()
 {
 	_key.clear();
 }
 
-void	Channel::setTopic(const std::string &topic)
+void Channel::setTopic(const std::string &topic)
 {
-	_topic = topic;
+    _topic = topic;
 }
 
-void	Channel::removeTopic()
+void Channel::removeTopic()
 {
 	_topic.clear();
 }
@@ -131,29 +148,22 @@ void	Channel::removeInviteOnly()
 	_inviteOnly = false;
 }
 
-void	Channel::setTopicRestricted()
+/*void Channel::mode(Client *client, const std::string &mode)
 {
-	_topicRestricted = true;
-}
-
-void	Channel::removeTopicRestricted()
-{
-	_topicRestricted = false;
-}
-
-void	Channel::setUserLimit(std::size_t limit)
-{
-	_userLimit = limit;
-}
-
-void	Channel::removeMembers()
-{
-	_members.clear();
-	_operators.clear();
-	_invited.clear();
-}
-
-bool	Channel::isEmpty() const
-{
-	return (_members.empty());
-}
+	if (mode == "+o")
+		addOperator(client);
+	else if (mode == "-o")
+		_operators.erase(client);
+	else if (mode == "+i")
+		_inviteOnly = true;
+	else if (mode == "-i")
+		_inviteOnly = false;
+	else if (mode == "+t")
+		_topicRestricted = true;
+	else if (mode == "-t")
+		_topicRestricted = false;
+	else if (mode[0] == '+')
+		setKey(mode.substr(1));
+	else if (mode[0] == '-')
+		setKey("");
+}*/

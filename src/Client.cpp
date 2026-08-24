@@ -1,8 +1,7 @@
 #include "Client.hpp"
 
 Client::Client(int fd)
-	: _fd(fd), _passValidated(false), _host("localhost"),
-	  _userReceived(false), _registered(false), _quitting(false)
+	: _fd(fd), _passValidated(false), _registered(false)
 {
 }
 
@@ -43,59 +42,6 @@ const std::string	&Client::getUser() const
 void	Client::setUser(const std::string &user)
 {
 	_user = user;
-}
-
-const std::string	&Client::getRealname() const
-{
-	return (_realname);
-}
-
-void	Client::setRealname(const std::string &realname)
-{
-	_realname = realname;
-}
-
-const std::string	&Client::getHost() const
-{
-	return (_host);
-}
-
-void	Client::setHost(const std::string &host)
-{
-	_host = host;
-}
-
-bool	Client::hasUserInfo() const
-{
-	return (_userReceived);
-}
-
-void	Client::setUserReceived(bool v)
-{
-	_userReceived = v;
-}
-
-/*
-** Falls back to "*" for a missing nick or user so the prefix is never
-** malformed: a client can legitimately send PRIVMSG the instant after NICK
-** but before USER, and a real client parsing ":!@host" would choke.
-*/
-std::string	Client::prefix() const
-{
-	std::string	nick = _nick.empty() ? "*" : _nick;
-	std::string	user = _user.empty() ? "*" : _user;
-
-	return (nick + "!" + user + "@" + _host);
-}
-
-bool	Client::isQuitting() const
-{
-	return (_quitting);
-}
-
-void	Client::setQuitting(bool v)
-{
-	_quitting = v;
 }
 
 bool	Client::isRegistered() const
@@ -147,4 +93,10 @@ void	Client::consumeWrite(std::size_t n)
 bool	Client::hasPendingWrite() const
 {
 	return (!_writeBuf.empty());
+}
+
+void Client::setUser(const std::string &realname, const std::string &username)
+{
+	_username = username;
+	_realName = realname;
 }

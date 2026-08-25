@@ -41,7 +41,7 @@ class Server
 		void						handlePASS(Client &client, const std::vector<std::string> &params);
 		void						handleNICK(Client &client, const std::vector<std::string> &params);
 		void 						handleUSER(Client &client, const std::vector<std::string> &params);
-		void                        handlePING(Client &client, const std::vector<std::string> &params);
+		void                        handlePING(Client &client);
 
 		// B: parses a line into command + params and routes it.
 		// Only JOIN is wired to a real handler so far, as a working example

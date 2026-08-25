@@ -271,23 +271,12 @@ void	Server::dispatchLine(Client &client, const std::string &line)
 	else if (command == "USER")
 		handleUSER(client, params);
 	else if (command == "PING")
-		handlePING(client, params);
+		handlePING(client);
 	else if (command == "PRIVMSG")
 		handlePrivmsg(client, params);
-	/*else if (command == "PASS" || command == "NICK" || command == "USER"
-		|| command == "PRIVMSG" || command == "NOTICE" || command == "PING"
-		|| command == "QUIT")
-	
-	|| command == "KICK" || command == "INVITE"
-		|| command == "TOPIC" || command == "MODE")
-	{
-		// TODO (C): implement, following handleJoin() as a model — look up
-		// the channel via getOrCreateChannel()/_channels, mutate it, then
-		// channel->broadcast(...) the result.
-	}*/
 	else
 	{
-		// TODO (B): PASS/NICK/USER/PRIVMSG/NOTICE/PING/QUIT + numeric
+		// TODO (B): NOTICE/PING/QUIT + numeric
 		// replies. Echo kept only so the poll loop stays testable meanwhile.
 		client.appendToWrite(line + "\r\n");
 	}
@@ -300,6 +289,12 @@ void Server::handleJoin(Client &client, const std::vector<std::string> &params)
         client.appendToWrite("ERROR 461: JOIN command requires 1 parameter: <channel>\r\n");
         return;
     }
+
+	if(!client.isRegistered())
+	{
+		client.appendToWrite("ERROR 451: MODE command can only be used by registered clients""\r\n");
+		return ;
+	}
 
     Channel *channel = getOrCreateChannel(&client, params[0]);
 
@@ -319,13 +314,15 @@ void Server::handleJoin(Client &client, const std::vector<std::string> &params)
 
     std::string nick = client.getNick().empty() ? "*" : client.getNick();
     channel->broadcast(":" + nick + " JOIN " + params[0] + "\r\n");
+	if(channel->isInviteOnly() && channel->isInvited(&client))
+		channel->removeInvite(&client);
 }
 
-void    error(const std::string &msg)
+/*void    client.appendToWrite(const std::string &msg)
 {
     std::cerr << "Error: " << msg << std::endl;
     std::exit(EXIT_FAILURE);
-}
+}*/
 
 Channel	*Server::getOrCreateChannel(Client *client, const std::string &name)
 {
@@ -356,7 +353,7 @@ void Server::handleInvite(Client &client, const std::vector<std::string> &params
 {
     if (params.size() < 2)
     {
-        error("ERROR 461: INVITE command requires 2 parameters: <nick> <channel>");
+        client.appendToWrite("ERROR 461: INVITE command requires 2 parameters: <nick> <channel>""\r\n");
         return;
     }
 
@@ -366,7 +363,7 @@ void Server::handleInvite(Client &client, const std::vector<std::string> &params
     std::map<std::string, Channel *>::iterator it = _channels.find(channelName);
     if (it == _channels.end())
     {
-        error("ERROR 403: No such channel");
+        client.appendToWrite("ERROR 403: No such channel""\r\n");
         return;
     }
 
@@ -374,30 +371,31 @@ void Server::handleInvite(Client &client, const std::vector<std::string> &params
 
     if (!channel->isOperator(&client))
     {
-        error("ERROR 482: You're not a channel operator");
+        client.appendToWrite("ERROR 482: You're not a channel operator""\r\n");
         return;
     }
 
     Client *target = findClientByNick(targetNick);
     if (!target)
     {
-        error("ERROR 401: No such nick/channel");
+        client.appendToWrite("ERROR 401: No such nick/channel""\r\n");
         return;
     }
 
     if (channel->isMember(target))
     {
-        error("ERROR 443: User is already in the channel");
+        client.appendToWrite("ERROR 443: User is already in the channel""\r\n");
         return;
     }
 
     if (channel->isInvited(target))
     {
-        error("ERROR 443: User is already invited to the channel");
+        client.appendToWrite("ERROR 443: User is already invited to the channel""\r\n");
         return;
     }
 
     channel->invite(target);
+	channel->broadcast(":" + client.getNick() + " INVITE " + target->getNick() + " :" + channel->getName() + "\r\n");
     target->appendToWrite(":" + client.getNick() + " INVITE " + target->getNick() + " :" + channel->getName() + "\r\n");
 }
 
@@ -405,7 +403,7 @@ void Server::handlePart(Client &client, const std::vector<std::string> &params)
 {
     if (params.empty())
     {
-        error("ERROR 461: PART command requires 1 parameter: <channel>");
+        client.appendToWrite("ERROR 461: PART command requires 1 parameter: <channel>""\r\n");
         return;
     }
 
@@ -414,7 +412,7 @@ void Server::handlePart(Client &client, const std::vector<std::string> &params)
     std::map<std::string, Channel *>::iterator it = _channels.find(channelName);
     if (it == _channels.end())
     {
-        error("ERROR 403: No such channel");
+        client.appendToWrite("ERROR 403: No such channel""\r\n");
         return;
     }
 
@@ -422,29 +420,40 @@ void Server::handlePart(Client &client, const std::vector<std::string> &params)
 
     if (!channel->isMember(&client))
     {
-        error("ERROR 442: You're not a member of this channel");
+        client.appendToWrite("ERROR 442: You're not a member of this channel""\r\n");
         return;
     }
 
-    channel->removeMember(&client);
     channel->broadcast(":" + client.getNick() + " PART " + channel->getName() + "\r\n");
+    channel->removeMember(&client);
+	if (channel->getMembers().empty())
+	{
+		delete channel;
+		_channels.erase(it);
+	}
 }
 
 void Server::handleKick(Client &client, const std::vector<std::string> &params)
 {
     if (params.size() < 2)
     {
-        error("ERROR 461: KICK command requires 2 parameters: <channel> <user>");
+        client.appendToWrite("ERROR 461: KICK command requires 2 parameters: <channel> <user>""\r\n");
         return;
     }
 
     const std::string &channelName = params[0];
     const std::string &targetNick = params[1];
 
+
+	if(client.getNick() == targetNick)
+	{
+		client.appendToWrite("ERROR 482: You cannot kick yourself""\r\n");
+		return;
+	}
     std::map<std::string, Channel *>::iterator it = _channels.find(channelName);
     if (it == _channels.end())
     {
-        error("ERROR 403: No such channel");
+        client.appendToWrite("ERROR 403: No such channel""\r\n");
         return;
     }
 
@@ -452,26 +461,26 @@ void Server::handleKick(Client &client, const std::vector<std::string> &params)
 
     if (!channel->isOperator(&client))
     {
-        error("ERROR 482: You're not a channel operator");
+        client.appendToWrite("ERROR 482: You're not a channel operator""\r\n");
         return;
     }
 
     Client *target = findClientByNick(targetNick);
     if (!target || !channel->isMember(target))
     {
-        error("ERROR 441: User not in channel");
+        client.appendToWrite("ERROR 441: User not in channel""\r\n");
         return;
     }
 
-    channel->removeMember(target);
     channel->broadcast(":" + client.getNick() + " KICK " + channel->getName() + " " + target->getNick() + "\r\n");
+    channel->removeMember(target);
 }
 
 void Server::handleTopic(Client &client, const std::vector<std::string> &params)
 {
     if (params.empty())
     {
-        error("ERROR 461: TOPIC command requires 1 parameter: <channel>");
+        client.appendToWrite("ERROR 461: TOPIC command requires 1 parameter: <channel>""\r\n");
         return;
     }
 
@@ -480,7 +489,7 @@ void Server::handleTopic(Client &client, const std::vector<std::string> &params)
     std::map<std::string, Channel *>::iterator it = _channels.find(channelName);
     if (it == _channels.end())
     {
-        error("ERROR 403: No such channel");
+        client.appendToWrite("ERROR 403: No such channel""\r\n");
         return;
     }
 
@@ -488,13 +497,13 @@ void Server::handleTopic(Client &client, const std::vector<std::string> &params)
 
     if (!channel->isMember(&client))
     {
-        error("ERROR 442: You're not a member of this channel");
+        client.appendToWrite("ERROR 442: You're not a member of this channel""\r\n");
         return;
     }
 
-    if (channel->isTopicRestricted() && !channel->isOperator(&client))
+    if (!channel->isOperator(&client))
     {
-        error("ERROR 482: You're not a channel operator");
+        client.appendToWrite("ERROR 482: You're not a channel operator""\r\n");
         return;
     }
 
@@ -517,28 +526,28 @@ void	Server::handleMode(Client &client, const std::vector<std::string> &params)
 
 	if(params.size() < 1)
 	{
-		error("ERROR 461: MODE command requires at least 1 parameter: <channel> [<mode>]");
+		client.appendToWrite("ERROR 461: MODE command requires at least 1 parameter: <channel> [<mode>]""\r\n");
 		return ;
 	}
 	if(!client.isRegistered())
 	{
-		error("ERROR 451: MODE command can only be used by registered clients");
+		client.appendToWrite("ERROR 451: MODE command can only be used by registered clients""\r\n");
 		return ;
 	}
 	if(it == _channels.end())
 	{
-		error("ERROR 403: MODE command can only be used for existing channels");
+		client.appendToWrite("ERROR 403: MODE command can only be used for existing channels""\r\n");
 		return ;
 	}
 	Channel *channel = it->second;
 	if(!channel->isMember(&client))
 	{
-		error("ERROR 442: MODE command can only be used by channel members");
+		client.appendToWrite("ERROR 442: MODE command can only be used by channel members""\r\n");
 		return ;
 	}
 	if(!channel->isOperator(&client))
 	{
-		error("ERROR 482: MODE command can only be used by channel operators");
+		client.appendToWrite("ERROR 482: MODE command can only be used by channel operators""\r\n");
 		return ;
 	}
 	if(params[1] == "+o")
@@ -574,7 +583,7 @@ void Server::handlePASS(Client &client, const std::vector<std::string> &params)
 {
 	if (params.empty())
 	{
-		error("ERROR 461: PASS command requires 1 parameter: <password>");
+		client.appendToWrite("ERROR 461: PASS command requires 1 parameter: <password>""\r\n");
 		return;
 	}
 
@@ -582,32 +591,39 @@ void Server::handlePASS(Client &client, const std::vector<std::string> &params)
 
 	if (password != _password)
 	{
-		error("ERROR 464: Password incorrect");
+		client.appendToWrite("ERROR 464: Password incorrect""\r\n");
 		return;
 	}
 
 	client.setPassValidated(true);
 }
 
-void Server::error(const std::string &msg)
+/*void Server::client.appendToWrite(const std::string &msg)
 {
     std::cerr << "Error: " << msg << std::endl;
-}
+}*/
 
 void Server::handleNICK(Client &client, const std::vector<std::string> &params)
 {
-	if (params.empty())
+	if(client.isPassValidated() == false)
 	{
-		error("ERROR 431: NICK command requires 1 parameter: <nickname>");
+		client.appendToWrite("ERROR 462: ENTER PASS password""\r\n");
 		return;
 	}
+	if (params.empty())
+	{
+		client.appendToWrite("ERROR 431: NICK command requires 1 parameter: <nickname>""\r\n");
+		return;
+	}
+
+	// CHECK IF PASS IS VALIDATED
 
 	const std::string &newNick = params[0];
 
 	Client *existingClient = findClientByNick(newNick);
 	if (existingClient && existingClient != &client)
 	{
-		error("ERROR 433: Nickname is already in use");
+		client.appendToWrite("ERROR 433: Nickname is already in use""\r\n");
 		return;
 	}
 
@@ -622,13 +638,29 @@ void Server::handleNICK(Client &client, const std::vector<std::string> &params)
 
 void	Server::handleUSER(Client &client, const std::vector<std::string> &params)
 {
-	if (params.size() < 3)
+	if (client.isRegistered())
 	{
-		error("ERROR 461: USER command requires 3 parameters: <username> <servername> <realname>");
+		client.appendToWrite("ERROR 462: You may not reregister""\r\n");
+		return;
+	}
+	if(client.getNick().empty())
+	{
+		client.appendToWrite("ERROR 451: USER command can only be used if registered NICK""\r\n");
+		return ;
+	}
+	if(client.getNick() != params[0])
+	{
+		client.appendToWrite("ERROR 464: USER command can only be used with the same nickname""\r\n");
+		return ;
+	}
+	if (params.size() < 2)
+	{
+		client.appendToWrite("ERROR 461: USER command requires 2 parameters: <username> <realname>""\r\n");
 		return;
 	}
 
-	client.setUser(params[0], params[2]);
+
+	client.setUser(params[0], params[1]);
 	if (client.isPassValidated() && !client.getNick().empty())
 	{
 		client.setRegistered(true);
@@ -636,23 +668,19 @@ void	Server::handleUSER(Client &client, const std::vector<std::string> &params)
 	}
 }
 
-void Server::handlePING(Client &client, const std::vector<std::string> &params)
+void Server::handlePING(Client &client)
 {
-	if (params.empty())
-	{
-		error("ERROR 409: PING command requires 1 parameter: <token>");
-		return;
-	}
-
-	const std::string &token = params[0];
-	client.appendToWrite("PONG " + token + "\r\n");
+	client.appendToWrite("PONG ""\r\n");
 }
 
-void Server::handlePrivmsg(Client &client, const std::vector<std::string> &params)
+
+/*void Server::handlePrivmsg(Client &client, const std::vector<std::string> &params)
 {
+	// faire en sorte de pouvoir envoyer plusiers mots a la fois dans le message
+	// ajouter  un param pour savoir si le message est pour un channel ou un user
 	if (params.size() < 2)
 	{
-		error("ERROR 461: PRIVMSG command requires 2 parameters: <target> <message>");
+		client.appendToWrite("ERROR 461: PRIVMSG command requires 2 parameters: <target> <message>""\r\n");
 		return;
 	}
 
@@ -672,15 +700,77 @@ void Server::handlePrivmsg(Client &client, const std::vector<std::string> &param
 			Channel *channel = it->second;
 			if (!channel->isMember(&client))
 			{
-				error("ERROR 404: Cannot send to channel, you are not a member");
+				client.appendToWrite("ERROR 404: Cannot send to channel, you are not a member""\r\n");
 				return;
 			}
 			channel->broadcast(":" + client.getNick() + " PRIVMSG " + target + " :" + message + "\r\n", &client);
 		}
 		else
 		{
-			error("ERROR 401: No such nick/channel");
+			client.appendToWrite("ERROR 401: No such nick/channel""\r\n");
 			return;
 		}
+	}
+}*/
+void Server::handlePrivmsg(Client &client, const std::vector<std::string> &params)
+{
+	// faire en sorte de pouvoir envoyer plusiers mots a la fois dans le message
+	// ajouter  un param pour savoir si le message est pour un channel ou un user
+	if (params.size() < 3)
+	{
+		client.appendToWrite("ERROR 461: PRIVMSG command requires atleast 3 parameters: <nick/chan> <target> <messages>""\r\n");
+		return;
+	}
+
+	if(client.getNick().empty())
+	{
+		client.appendToWrite("ERROR 451: PRIVMSG command can only be used by registered clients""\r\n");
+		return;
+	}
+
+	const std::string &type = params[0];
+	if(type != "nick" && type != "chan")
+	{
+		client.appendToWrite("ERROR 461: PRIVMSG command requires 1st parameter to be either 'nick' or 'chan'""\r\n");
+		return;
+	}
+	const std::string &target = params[1];
+	if(type == "nick")
+	{
+		Client *targetClient = findClientByNick(target);
+		if (!targetClient)
+		{
+			client.appendToWrite("ERROR 401: No such nick""\r\n");
+			return;
+		}
+		targetClient->appendToWrite(":" + client.getNick() + " PRIVMSG " + target + " :" );
+		for (size_t i = 2; i < params.size(); i++)
+		{
+			const std::string &message = params[i];
+			targetClient->appendToWrite(message + " ");
+		}
+		targetClient->appendToWrite("\r\n");
+	}
+	else if(type == "chan")
+	{
+		std::map<std::string, Channel *>::iterator it = _channels.find(target);
+		if (it == _channels.end())
+		{
+			client.appendToWrite("ERROR 401: No such channel""\r\n");
+			return;
+		}
+		Channel *channel = it->second;
+		if (!channel->isMember(&client))
+		{
+			client.appendToWrite("ERROR 404: Cannot send to channel, you are not a member""\r\n");
+			return;
+		}
+		channel->broadcast(":" + client.getNick() + " PRIVMSG " + target + " :" );
+		for (size_t i = 2; i < params.size(); i++)
+		{
+			const std::string &message = params[i];
+			channel->broadcast(message + " ");
+		}
+		channel->broadcast("\r\n");
 	}
 }

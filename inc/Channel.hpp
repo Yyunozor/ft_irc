@@ -55,6 +55,7 @@ class Channel
 
 		bool 						isInvited(Client *client) const;
 		void						invite(Client *client);
+		void						removeInvite(Client *client);
 
 		void						setKey(const std::string &key);
 		void						removeKey();

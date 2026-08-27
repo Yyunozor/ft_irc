@@ -171,22 +171,3 @@ void	Channel::removeInviteOnly()
 	_inviteOnly = false;
 }
 
-/*void Channel::mode(Client *client, const std::string &mode)
-{
-	if (mode == "+o")
-		addOperator(client);
-	else if (mode == "-o")
-		_operators.erase(client);
-	else if (mode == "+i")
-		_inviteOnly = true;
-	else if (mode == "-i")
-		_inviteOnly = false;
-	else if (mode == "+t")
-		_topicRestricted = true;
-	else if (mode == "-t")
-		_topicRestricted = false;
-	else if (mode[0] == '+')
-		setKey(mode.substr(1));
-	else if (mode[0] == '-')
-		setKey("");
-}*/

@@ -62,6 +62,12 @@ class Channel
 		void						removeInviteOnly();
 		void						setTopic(const std::string &topic);
 		void						removeTopic();
+		// Mode t: restricts TOPIC to channel operators. _topicRestricted was
+		// declared and read by isTopicRestricted(), but nothing could ever set
+		// it -- the only assignment lived in the commented-out mode() below.
+		void						setTopicRestricted();
+		void						removeTopicRestricted();
+		// Mode l: 0 means no limit.
 		void						setUserLimit(std::size_t limit);
 
 		void						removeInviteOnly(Channel *channel);

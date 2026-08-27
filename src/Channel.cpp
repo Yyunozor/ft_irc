@@ -143,6 +143,24 @@ void	Channel::setInviteOnly()
 	_inviteOnly = true;
 }
 
+void	Channel::setTopicRestricted()
+{
+	_topicRestricted = true;
+}
+
+void	Channel::removeTopicRestricted()
+{
+	_topicRestricted = false;
+}
+
+/*
+** A limit of 0 means "no limit", which is also what -l restores.
+*/
+void	Channel::setUserLimit(std::size_t limit)
+{
+	_userLimit = limit;
+}
+
 void	Channel::removeInviteOnly()
 {
 	_inviteOnly = false;

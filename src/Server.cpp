@@ -1,6 +1,7 @@
 #include "Server.hpp"
 #include "Parser.hpp"
 #include "Replies.hpp"
+#include <sstream>
 #include "Client.hpp"
 #include "Channel.hpp"
 #include <sys/socket.h>
@@ -306,6 +307,16 @@ void Server::handleJoin(Client &client, const std::vector<std::string> &params)
 
 	// params[1] is the optional channel key: "JOIN #dev" carries none, so the
 	// vector holds a single element and reading params[1] was out of bounds.
+	// Mode l: the cap was stored but never enforced, so a full channel still
+	// accepted everyone.
+	if (channel->getUserLimit() > 0
+		&& channel->getMembers().size() >= channel->getUserLimit()
+		&& !channel->isMember(&client))
+	{
+		client.appendToWrite(irc::errChannelIsFull(client.getNick(), params[0]));
+		return;
+	}
+
 	if (params.size() > 1 && params[1] != channel->getKey())
 	{
 		client.appendToWrite("ERROR 475: Cannot join channel " + params[0] + ", incorrect key\r\n");
@@ -580,17 +591,38 @@ void	Server::handleMode(Client &client, const std::vector<std::string> &params)
 		channel->setInviteOnly();
 	if(params[1] == "-i")
 		channel->removeInviteOnly();
-	if(params[1] == "+t" && params.size() > 2)
-		channel->setTopic(params[2]);
+	// Mode t restricts TOPIC to operators; it does not touch the topic text.
+	// The previous code called setTopic()/removeTopic(), which changed or
+	// erased the subject instead.
+	if(params[1] == "+t")
+		channel->setTopicRestricted();
 	if(params[1] == "-t")
-		channel->removeTopic();
+		channel->removeTopicRestricted();
 	if(params[1] == "+k" && params.size() > 2)
 		channel->setKey(params[2]);
 	if(params[1] == "-k")
 		channel->removeKey();
+	// Mode l: "+l <n>" caps the membership, "-l" lifts the cap. A limit that
+	// is not a positive number is ignored rather than parsed as 0, which
+	// would silently mean "no limit".
+	if(params[1] == "+l" && params.size() > 2)
+	{
+		std::istringstream	iss(params[2]);
+		long				limit = 0;
 
-	//TODO(C): implement mode changes and broadcast the result to channel members
+		if ((iss >> limit) && iss.eof() && limit > 0)
+			channel->setUserLimit(static_cast<std::size_t>(limit));
+	}
+	if(params[1] == "-l")
+		channel->setUserLimit(0);
 
+	// Every member has to learn about the change, otherwise their client keeps
+	// showing stale channel modes.
+	std::string	announce = params[1];
+	if (params.size() > 2)
+		announce += " " + params[2];
+	channel->broadcast(irc::fromUser(client.prefix(),
+		"MODE " + channel->getName() + " " + announce));
 }
 
 void Server::handlePASS(Client &client, const std::vector<std::string> &params)

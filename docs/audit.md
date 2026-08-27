@@ -15,7 +15,7 @@ au rédhibitoire ; tout ce qui fonctionne a été laissé tel quel.
 |---|---|---|
 | 🔴 Crashs rédhibitoires | 3 | ✅ **corrigés et vérifiés** |
 | 🟠 Bloquants pour le client de référence | 5 | ✅ **corrigés et vérifiés** |
-| 🔵 Fonctionnalités obligatoires manquantes | 2 | ⚠️ **à faire — partie C** |
+| 🔵 Modes obligatoires non fonctionnels | 2 | ✅ **corrigés et vérifiés** |
 | 🟡 Micro-corrections | 6 | ⚠️ mentionnées, non appliquées |
 | ✅ Déjà conforme | 12 | laissé tel quel |
 
@@ -127,29 +127,39 @@ paramètres (le 15ᵉ avale le reste de la ligne). Testé isolément : 16/16.
 
 # Partie 2 — À faire, non appliqué
 
-## 🔵 F1. Mode `t` non fonctionnel — **fonctionnalité obligatoire**
+## ✅ F1. Mode `t` — CORRIGÉ
 
-`inc/Channel.hpp` déclare `_topicRestricted` et `isTopicRestricted()`, mais
-**aucun setter n'existe**. Le membre est initialisé à `false` et ne change
-jamais.
+`_topicRestricted` n'était écrit qu'à un seul endroit : dans `Channel::mode()`,
+**entièrement commentée**. Le membre restait donc `false` à vie, et dans
+`handleMode`, `+t` appelait `setTopic(params[2])` — qui change le *texte* du
+sujet — tandis que `-t` appelait `removeTopic()`, qui l'efface.
 
-Dans `handleMode`, `+t` appelle `setTopic(params[2])` — qui change le *texte*
-du sujet — et `-t` appelle `removeTopic()`, qui l'efface. Le mode t ne fait
-donc pas du tout ce qu'il devrait.
+**Vérifié avant correction** : ana pose `+t`, ben (membre non-opérateur) change
+le sujet sans être refusé.
 
-**Correction attendue** : ajouter `setTopicRestricted()` / `removeTopicRestricted()`
-à `Channel`, et les appeler depuis `handleMode`.
+**Correction** : ajout de `Channel::setTopicRestricted()` /
+`removeTopicRestricted()`, appelés depuis `handleMode`.
+**Vérifié après** : ben refusé avec `482`, `-t` lève bien la restriction.
 
-## 🔵 F2. Mode `l` totalement absent — **fonctionnalité obligatoire**
+## ✅ F2. Mode `l` — CORRIGÉ
 
-`handleMode` ne traite ni `+l` ni `-l`. `Channel::setUserLimit()` existe mais
-n'est jamais appelé, et `handleJoin` ne vérifie jamais `getUserLimit()`.
+Ni `+l` ni `-l` n'étaient traités. `setUserLimit()` était déclarée mais **jamais
+définie**, et `handleJoin` ne consultait jamais `getUserLimit()`.
 
-Le sujet impose les cinq modes `i`, `t`, `k`, `o`, `l`. **Deux sur cinq sont
-non fonctionnels**, ce qui rend la partie obligatoire incomplète.
+**Vérifié avant correction** : `MODE #c +l 1` puis un second client rejoint
+quand même.
 
-**Correction attendue** : traiter `+l <nombre>` et `-l` dans `handleMode`, et
-refuser le `JOIN` avec `471 ERR_CHANNELISFULL` quand la limite est atteinte.
+**Correction** : définition de `setUserLimit()`, traitement de `+l <n>` / `-l`
+dans `handleMode` (une valeur non numérique ou nulle est ignorée plutôt que
+lue comme « pas de limite »), et refus du `JOIN` avec `471 ERR_CHANNELISFULL`
+quand la limite est atteinte.
+**Vérifié après** : second client refusé avec `471`.
+
+## ✅ F3. Les changements de mode sont désormais diffusés
+
+Le `TODO(C)` en fin de `handleMode` signalait que rien n'était annoncé aux
+membres. Ils recevaient donc des modes périmés. Un
+`:nick!user@host MODE #chan +t` est maintenant diffusé.
 
 ## 🟡 Micro-corrections
 
@@ -157,7 +167,7 @@ refuser le `JOIN` avec `471 ERR_CHANNELISFULL` quand la limite est atteinte.
 |---|---|---|
 | M1 | `src/Server.cpp` | Deux blocs de code mort commentés, dont un contenant `std::exit()` (fonction hors liste autorisée, mais commentée donc inoffensive). À supprimer pour éviter la question en soutenance. |
 | M2 | `src/Server.cpp` | 40 messages d'erreur en texte libre (`"ERROR 403: No such channel"`) au lieu des numériques. irssi les affiche en texte brut : laid, mais la session n'est pas cassée. Les 30 fonctions prêtes sont dans `inc/Replies.hpp`. |
-| M3 | `src/Server.cpp` | Les channels vides ne sont jamais détruits ; ils s'accumulent pendant l'exécution (libérés uniquement dans le destructeur de `Server`). Fuite lente, sans crash. |
+| M3 | `src/Server.cpp` | Les channels vides ne sont jamais détruits ; ils s'accumulent pendant l'exécution. **La branche `ILIAS` contient déjà le correctif** (`handlePart` supprime le channel devenu vide) : à récupérer plutôt qu'à réécrire. |
 | M4 | `src/main.cpp` | Le port n'est pas validé : `atoi("abc")` vaut 0, `atoi("99999")` déborde la plage TCP. Mot de passe vide accepté. Pas de crash, mais un message d'erreur peu clair. |
 | M5 | `src/Client.cpp` | `_readBuf` sans plafond : un client qui envoie des octets sans jamais de `\r\n` fait grossir la mémoire indéfiniment. |
 | M6 | `inc/Channel.hpp` | `getinviteOnly()` (minuscule), une surcharge `removeInviteOnly(Channel *)` et `mode()` sont déclarés mais semblent inutilisés. À nettoyer. |
@@ -218,3 +228,31 @@ Scénarios couverts par la suite : enregistrement nominal, format irssi
 `451` / `421` / `461`, `PONG`, `JOIN` / `PRIVMSG` / `TOPIC` / `QUIT` à deux
 clients, `NOTICE` sans erreur, 24 commandes malformées, 8 clients simultanés
 avec déconnexions brutales.
+
+
+---
+
+# Annexe — portabilité Linux
+
+Le projet sera rendu et évalué sur Linux, mais développé sur macOS. Vérifié
+depuis le Mac avec **GCC 15 et libstdc++** (la bibliothèque standard de Linux,
+et non la libc++ d'Apple) :
+
+```
+g++-15 -Wall -Wextra -Werror -std=c++98 -Iinc -c src/*.cpp
+  -> 0 warning, 0 erreur, sur les 5 unités de compilation
+```
+
+Le binaire produit par GCC passe **18/18** sur la même suite d'intégration que
+celui produit par clang, avec des réponses identiques octet pour octet.
+
+C'est le meilleur signal atteignable sans machine Linux, parce que la cause
+n°1 de casse macOS → Linux est l'include manquant : la libc++ d'Apple tire
+transitivement des en-têtes que la libstdc++ ne tire pas. Compiler avec GCC et
+libstdc++ élimine cette classe entière de problèmes.
+
+**Ce que ce test ne couvre pas** : le noyau Linux reste différent (comportement
+de `poll()` sous charge, sémantique exacte de `SOMAXCONN`), et GNU Make 4.x
+remplace le 3.81 de macOS — ce dernier point est plutôt un progrès, la version
+d'Apple comparant les dates à la seconde près. Il reste à faire un `make re`
+puis un test avec un vrai client sur la machine cible.

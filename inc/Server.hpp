@@ -37,11 +37,17 @@ class Server
 		void						handleInvite(Client &client, const std::vector<std::string> &params);
 		void						handleTopic(Client &client, const std::vector<std::string> &params);
 		void						handleMode(Client &client, const std::vector<std::string> &params);
-		void 						handlePrivmsg(Client &client, const std::vector<std::string> &params);
+		// PRIVMSG and NOTICE share one implementation; NOTICE must never
+		// produce an error reply (RFC 2812 3.3.2).
+		void 						handlePrivmsg(Client &client, const std::vector<std::string> &params,
+										bool isNotice);
 		void						handlePASS(Client &client, const std::vector<std::string> &params);
 		void						handleNICK(Client &client, const std::vector<std::string> &params);
 		void 						handleUSER(Client &client, const std::vector<std::string> &params);
 		void                        handlePING(Client &client, const std::vector<std::string> &params);
+		void						handleQuit(Client &client, const std::vector<std::string> &params);
+		// Sends 001-004 the moment PASS + NICK + USER are all satisfied.
+		void						completeRegistration(Client &client);
 
 		// B: parses a line into command + params and routes it.
 		// Only JOIN is wired to a real handler so far, as a working example
@@ -54,6 +60,9 @@ class Server
 		// _clients/_channels directly from outside Server.
 		Channel	*getOrCreateChannel(Client *client, const std::string &name);
 		Client	*findClientByNick(const std::string &nick);
+		// Drops a client from every channel it joined. Must run before the
+		// Client is deleted, otherwise Channel keeps a dangling pointer.
+		void	removeFromAllChannels(Client *client);
 
 		Server(const Server &other);
 		Server &operator=(const Server &other);

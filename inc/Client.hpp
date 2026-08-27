@@ -23,7 +23,10 @@ class Client
 		std::string	_user;			// B
 		std::string	_realName;
 		std::string _username;
+		std::string	_host;			// B: the "host" part of the message prefix
+		bool		_userReceived;	// B: USER seen (distinct from _user != "")
 		bool		_registered;	// B: PASS + NICK + USER all done
+		bool		_quitting;		// B: flagged for removal, see setQuitting()
 
 		Client(const Client &other);
 		Client &operator=(const Client &other);
@@ -43,6 +46,18 @@ class Client
 		void				setUser(const std::string &user);
 		bool				isRegistered() const;
 		void				setRegistered(bool v);
+		bool				hasUserInfo() const;
+		void				setUserReceived(bool v);
+
+		// "nick!user@host" -- the prefix every message this client originates
+		// must carry, so other clients can attribute it.
+		std::string			prefix() const;
+
+		// A client that sent QUIT is not destroyed on the spot: the poll()
+		// loop is still iterating, and its farewell reply must still go out
+		// through POLLOUT. It is flagged here and dropped once drained.
+		bool				isQuitting() const;
+		void				setQuitting(bool v);
 
 		// --- buffers (A) ---
 		const std::string	&readBuffer() const;

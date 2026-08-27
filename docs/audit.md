@@ -256,3 +256,155 @@ de `poll()` sous charge, sémantique exacte de `SOMAXCONN`), et GNU Make 4.x
 remplace le 3.81 de macOS — ce dernier point est plutôt un progrès, la version
 d'Apple comparant les dates à la seconde près. Il reste à faire un `make re`
 puis un test avec un vrai client sur la machine cible.
+
+---
+
+# Partie 4 — Conformité à la grille d'évaluation (42evalhub)
+
+Grille lue sur `42evalhub.com/common/ftirc`. Chaque point a été rejoué.
+
+## Basic checks — éliminatoires (0 immédiat si un seul échoue)
+
+| Point de la grille | État | Preuve |
+|---|---|---|
+| Makefile, compile avec les options requises, C++, exécutable attendu | ✅ | `make re` silencieux, `-Wall -Wextra -Werror -std=c++98 -pedantic-errors` |
+| **Un seul `poll()`** | ✅ | un seul appel réel (`src/Server.cpp:86`) ; les autres occurrences sont des commentaires |
+| `poll()` appelé avant **chaque** accept / recv / send, et pas d'`errno` ensuite | ✅ | `accept` sur POLLIN de la socket d'écoute, `recv` sur POLLIN, `send` sur POLLOUT. Aucune I/O ailleurs. `errno` n'apparaît que dans des commentaires. |
+| `fcntl()` uniquement en `fcntl(fd, F_SETFL, O_NONBLOCK)` | ✅ | deux appels, tous deux sous cette forme exacte |
+
+> C'est précisément ce point qui avait invalidé mon `send()` « best-effort » avant `close()` : il écrivait sur un fd sans POLLOUT. Il a été remplacé par un drain via `poll()`.
+
+## Networking
+
+| Point | État |
+|---|---|
+| Écoute sur toutes les interfaces, port pris sur la ligne de commande | ✅ `INADDR_ANY` |
+| Connexion via `nc`, envoi de commandes, réponses du serveur | ✅ |
+| Connexion via le client IRC de référence | ⚠️ **jamais testé — irssi n'est installé sur aucune machine de l'équipe** |
+| Connexions multiples simultanées sans blocage | ✅ 8 clients en parallèle |
+| JOIN, et messages relayés à tous les membres du channel | ✅ |
+
+## Networking specials — les tests les plus durs
+
+| Point | État | Mesure |
+|---|---|---|
+| Commandes partielles via `nc`, autres connexions intactes | ✅ | commande coupée en plein mot réassemblée |
+| Client tué brutalement, serveur toujours opérationnel | ✅ | |
+| `nc` tué avec **une demi-commande** en vol | ✅ | nouveau client servi normalement juste après |
+| **Client figé (`^Z`) + flood du channel** : pas de blocage, puis traitement de tout l'arriéré au réveil, sans fuite | ✅ | 3000 messages accumulés, RSS 19,9 Mo, serveur resté réactif à un nouveau client, **3006 lignes délivrées** après `SIGCONT` |
+
+## Fuites mémoire — exigence explicite de la grille
+
+> *« Any memory allocated on the heap must be properly freed before the end of execution. »*
+
+**Défaut trouvé et corrigé.** La boucle était `while (true)` et aucun signal n'était intercepté : le `Ctrl+C` de l'évaluateur tuait le processus, `~Server()` n'était jamais atteint, et **tous les `Client` et `Channel` du tas étaient perdus**.
+
+`SIGINT` et `SIGTERM` posent désormais un drapeau (`volatile sig_atomic_t`, seule opération sûre dans un handler), la boucle sort, les destructeurs s'exécutent et les descripteurs des clients sont fermés. Vérifié : `leaks` rapporte 0 fuite, et l'arrêt sous ASan/UBSan est propre.
+
+## Client Commands channel operator — noté de 0 à 5
+
+Les cinq modes `i t k o l` fonctionnent (voir F1/F2), `KICK`, `INVITE`, `TOPIC`, `PART` aussi, et les changements de mode sont diffusés.
+
+---
+
+# Partie 5 — Branche `origin/ILIAS` : ce qu'on a repris, ce qu'on a écarté
+
+La branche `origin/ILIAS` (`e2f4ab1`) part d'un état antérieur (`ce5685c`) et
+contient du travail non fusionné. Chaque correctif a été analysé puis
+**contre-vérifié de façon indépendante et adversariale** avant décision.
+
+⚠️ **Ne jamais fusionner cette branche en bloc** : elle supprime
+`inc/Replies.hpp`, dont `src/Server.cpp` dépend en 23 endroits.
+
+## ✅ Repris — `Channel::removeInvite()`
+
+Sur `main`, `_invited` n'était **jamais vidé**. Deux conséquences :
+
+1. Une invitation était éternelle : un membre invité sur un salon `+i` pouvait
+   partir et revenir indéfiniment sans nouvelle invitation.
+2. Plus grave : `removeFromAllChannels()` n'appelait que `removeMember()`, qui
+   ne touche que `_members` et `_operators`. Un invité qui se déconnectait
+   **sans jamais entrer** laissait son adresse dans `_invited`, et
+   `new Client(fd)` réutilise très souvent le bloc que `delete` vient de
+   libérer — le client suivant héritait de l'invitation et entrait dans un
+   salon `+i` sans y être convié.
+
+**Mesuré : 11 contournements sur 12 avant correction, 0 sur 12 après.**
+Ce n'est pas un crash (`_invited` n'est jamais déréférencé, seulement
+`find`/`insert`/`erase`, donc ASan reste muet) mais c'est un contournement de
+contrôle d'accès devant un correcteur.
+
+*Adaptation par rapport à sa version* : l'appel est **inconditionnel**. Sa garde
+`if (isInviteOnly() && isInvited())` était inutile (`erase` sur un élément
+absent est un no-op) et nuisible : sur un salon `-i`, l'invitation restait en
+réserve, prête à être encaissée le jour où un opérateur remettait `+i`.
+Et l'appel est placé **après** `addMember()`, jamais avant : un `JOIN` refusé
+plus haut par `+l` ou `+k` doit laisser l'invitation intacte.
+
+**Changement de comportement à assumer** : une invitation devient à usage
+unique. C'est la sémantique des vrais serveurs IRC.
+
+## ✅ Repris — destruction des channels devenus vides
+
+Son `handlePart` supprimait le channel vidé. Repris, **et étendu au chemin de
+déconnexion**, sinon le sort d'un salon dépendrait de la *manière* dont le
+dernier membre est parti : `PART` le détruisait, une socket coupée non.
+
+Le survivant est un fantôme : `getOrCreateChannel()` rend un salon existant
+**sans accorder le statut d'opérateur**, donc le prochain arrivant hérite d'un
+salon qu'il ne peut pas administrer, et qui a gardé ses `+i`/`+k`/`+l`. Un
+fantôme `+i` est injoignable à jamais.
+
+*Note C++98* : `std::map::erase(iterator)` renvoie `void`, donc la forme
+`it = erase(it)` n'existe pas ; `erase(it++)` est l'idiome portable, le
+post-incrément étant séquencé avant l'invalidation.
+
+## ❌ Écarté — diffusion de l'`INVITE` à tout le channel
+
+RFC 2812 §3.2.7 et RFC 1459 : seuls **l'émetteur** (via `341 RPL_INVITING`) et
+**l'invité** sont notifiés. Diffuser à tout le salon est une fuite
+d'information — tout le monde apprend qui a été invité — et n'est le
+comportement d'aucun serveur IRC. La seule variante qui notifie des tiers est
+la capability IRCv3 `invite-notify`, opt-in via `CAP` et réservée aux
+opérateurs.
+
+## ❌ Écarté — refus de se kicker soi-même
+
+Trois raisons :
+
+1. **Hors protocole.** La RFC 2812 §3.2.8 énumère six réponses d'erreur pour
+   `KICK` (461, 403, 476, 482, 441, 442) ; aucune ne signifie « tu ne peux pas
+   te kicker ». Aucun serveur de production ne le refuse — c'est même un
+   idiome pour quitter un salon.
+2. **Collision de code.** Il réutilise `482` (`ERR_CHANOPRIVSNEEDED`) avec un
+   autre sens, alors que le vrai `482` est émis six lignes plus bas dans la
+   même fonction. Un client reçoit deux textes différents sous un même numéro.
+3. **Ordre des vérifications faux.** Le bloc est placé avant le test `403`
+   (salon inexistant) et avant le `482` : `KICK #nexistepas monpseudo` répond
+   « You cannot kick yourself » au lieu de `403`. La précédence des erreurs est
+   exactement ce qu'un correcteur teste.
+
+## ⚠️ À adapter — `test_ircserv.sh`
+
+Son script (241 lignes) a une vraie valeur, mais il est **inutilisable tel
+quel** : `send_cmds` fait `echo | nc -C -w 1`, or `nc` ferme dès l'EOF de stdin,
+**avant** l'arrivée de la réponse — 9 assertions comparent une chaîne vide.
+Mesuré contre le `main` actuel : 16/25, dont 9 échecs qui sont purement des
+artefacts du harnais. Avec une seule ligne corrigée (garder stdin ouvert) :
+24/25. En assertions strictes : 21/25.
+
+Et un vrai bug qu'il révèle : **`353 RPL_NAMREPLY` est absent du `JOIN`**.
+
+---
+
+# Partie 6 — Ce qui reste
+
+| # | Sujet | Pourquoi ça compte |
+|---|---|---|
+| 1 | **Tester avec irssi** | Point explicite de la grille, jamais fait faute d'installation |
+| 2 | `353` / `366` absents du `JOIN` | Un vrai client attend la liste des membres après avoir rejoint |
+| 3 | `341 RPL_INVITING` absent de `INVITE` | L'émetteur n'a aucune confirmation |
+| 4 | 40 messages d'erreur en texte libre | Le serveur est **hybride** : vrais numériques pour 001-004, 421, 451, 461, 471, 473, 475, 482, texte libre ailleurs |
+| 5 | `inc/Channel.hpp` : `removeInviteOnly(Channel *)` déclarée, jamais définie | Erreur de link le jour où quelqu'un l'appelle |
+| 6 | `handlePart` diffuse **après** `removeMember` | Le partant ne reçoit pas son propre `PART` |
+| 7 | Logins 42 dans le README | Exigence du chapitre V |

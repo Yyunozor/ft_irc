@@ -81,6 +81,11 @@ void	Channel::invite(Client *client)
 	_invited.insert(client);
 }
 
+void	Channel::removeInvite(Client *client)
+{
+	_invited.erase(client);
+}
+
 bool 	Channel::isInvited(Client *client) const
 {
 	std::set<Client *>::const_iterator it = _invited.find(client);

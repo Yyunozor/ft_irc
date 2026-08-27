@@ -55,6 +55,9 @@ class Channel
 
 		bool 						isInvited(Client *client) const;
 		void						invite(Client *client);
+		// Consuming an invite is a plain erase: erasing an absent element is a
+		// no-op, so callers never need to test isInvited() first.
+		void						removeInvite(Client *client);
 
 		void						setKey(const std::string &key);
 		void						removeKey();

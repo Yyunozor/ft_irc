@@ -402,9 +402,52 @@ Et un vrai bug qu'il révèle : **`353 RPL_NAMREPLY` est absent du `JOIN`**.
 | # | Sujet | Pourquoi ça compte |
 |---|---|---|
 | 1 | **Tester avec irssi** | Point explicite de la grille, jamais fait faute d'installation |
-| 2 | `353` / `366` absents du `JOIN` | Un vrai client attend la liste des membres après avoir rejoint |
-| 3 | `341 RPL_INVITING` absent de `INVITE` | L'émetteur n'a aucune confirmation |
+| ~~2~~ | ~~`353`/`366` absents du `JOIN`~~ | ✅ **corrigé** — voir ci-dessous |
+| ~~3~~ | ~~`341` absent de l'`INVITE`~~ | ✅ **corrigé** — voir ci-dessous |
 | 4 | 40 messages d'erreur en texte libre | Le serveur est **hybride** : vrais numériques pour 001-004, 421, 451, 461, 471, 473, 475, 482, texte libre ailleurs |
 | 5 | `inc/Channel.hpp` : `removeInviteOnly(Channel *)` déclarée, jamais définie | Erreur de link le jour où quelqu'un l'appelle |
 | 6 | `handlePart` diffuse **après** `removeMember` | Le partant ne reçoit pas son propre `PART` |
 | 7 | Logins 42 dans le README | Exigence du chapitre V |
+
+
+---
+
+# Partie 7 — Séquence de JOIN complète
+
+Un `JOIN` ne se termine pas avec l'écho de la commande. Un client IRC réel
+enchaîne sur le sujet du salon, puis remplit sa liste de membres à partir du
+`353` et cesse d'attendre au `366`. Sans ces réponses, il ouvre la fenêtre du
+salon avec **une liste de membres vide**, quel que soit le nombre de personnes
+présentes.
+
+**Avant** (5 lignes) :
+
+```
+:ircserv 001 alice :Welcome to the Internet Relay Network alice!alice@localhost
+:ircserv 002 alice :Your host is ircserv, running version ft_irc-1.0
+:ircserv 003 alice :This server was created at startup
+:ircserv 004 alice ircserv ft_irc-1.0 o itkol
+:alice!alice@localhost JOIN #test
+```
+
+**Après** (8 lignes) :
+
+```
+... les quatre numériques d'accueil, identiques ...
+:alice!alice@localhost JOIN #test
+:ircserv 332 alice #test :notre salon de dev
+:ircserv 353 alice = #test :@deja bob alice
+:ircserv 366 alice #test :End of /NAMES list
+```
+
+- `332 RPL_TOPIC` quand un sujet est posé, `331 RPL_NOTOPIC` sinon
+- `353 RPL_NAMREPLY` liste les membres, les opérateurs préfixés d'un `@`
+- `366 RPL_ENDOFNAMES` clôt la liste
+
+`INVITE` notifie désormais exactement deux personnes, comme l'impose la
+RFC 2812 §3.2.7 — et personne d'autre :
+
+```
+émetteur : :ircserv 341 op #inv cible
+invité   : :op!op@localhost INVITE cible :#inv
+```

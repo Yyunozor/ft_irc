@@ -2,6 +2,7 @@
 #include "Parser.hpp"
 #include "Replies.hpp"
 #include <sstream>
+#include <set>
 #include "Client.hpp"
 #include "Channel.hpp"
 #include <sys/socket.h>
@@ -356,6 +357,33 @@ void Server::handleJoin(Client &client, const std::vector<std::string> &params)
     // Full "nick!user@host" prefix: a real client needs user@host to build
     // its member list and to recognise its own JOIN.
     channel->broadcast(irc::fromUser(client.prefix(), "JOIN " + params[0]));
+
+    // A JOIN is not finished with the echo above. A real client then waits for
+    // the topic, and fills its member list from 353 before 366 tells it the
+    // list is complete. Without these it opens the channel window with an
+    // empty member list, however many people are actually in the room.
+    if (channel->getTopic().empty())
+        client.appendToWrite(irc::rplNoTopic(client.getNick(), params[0]));
+    else
+        client.appendToWrite(irc::rplTopic(client.getNick(), params[0],
+            channel->getTopic()));
+
+    const std::set<Client *>    &members = channel->getMembers();
+    std::string                 names;
+
+    for (std::set<Client *>::const_iterator it = members.begin();
+        it != members.end(); ++it)
+    {
+        if (!names.empty())
+            names += " ";
+        // '@' is how the protocol marks a channel operator inside the names
+        // list; clients render it as a badge next to the nickname.
+        if (channel->isOperator(*it))
+            names += "@";
+        names += (*it)->getNick();
+    }
+    client.appendToWrite(irc::rplNamReply(client.getNick(), params[0], names));
+    client.appendToWrite(irc::rplEndOfNames(client.getNick(), params[0]));
 }
 
 /*void    client.appendToWrite(const std::string &msg)
@@ -472,6 +500,10 @@ void Server::handleInvite(Client &client, const std::vector<std::string> &params
     }
 
     channel->invite(target);
+    // RFC 2812 3.2.7: exactly two people are notified -- the invitee gets the
+    // INVITE, and the inviter gets 341 as confirmation. Nobody else.
+    client.appendToWrite(irc::rplInviting(client.getNick(), channel->getName(),
+        target->getNick()));
     target->appendToWrite(irc::fromUser(client.prefix(), "INVITE " + target->getNick() + " :" + channel->getName()));
 }
 

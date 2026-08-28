@@ -100,6 +100,31 @@ inline std::string	errNeedMoreParams(const std::string &nick, const std::string 
 	return (numeric("461", nick, command + " :Not enough parameters"));
 }
 
+inline std::string	errPasswdMismatch(const std::string &nick)
+{
+	return (numeric("464", nick, ":Password incorrect"));
+}
+
+inline std::string	errAlreadyRegistred(const std::string &nick)
+{
+	return (numeric("462", nick, ":You may not reregister"));
+}
+
+inline std::string	errNoNicknameGiven(const std::string &nick)
+{
+	return (numeric("431", nick, ":No nickname given"));
+}
+
+inline std::string	errErroneusNickname(const std::string &nick, const std::string &badNick)
+{
+	return (numeric("432", nick, badNick + " :Erroneous nickname"));
+}
+
+inline std::string	errNicknameInUse(const std::string &nick, const std::string &wanted)
+{
+	return (numeric("433", nick, wanted + " :Nickname is already in use"));
+}
+
 // --- channel numerics, for C ----------------------------------------------
 
 inline std::string	rplNoTopic(const std::string &nick, const std::string &chan)
@@ -133,6 +158,43 @@ inline std::string	rplEndOfNames(const std::string &nick, const std::string &cha
 inline std::string	errChannelIsFull(const std::string &nick, const std::string &chan)
 {
 	return (numeric("471", nick, chan + " :Cannot join channel (+l)"));
+}
+
+inline std::string	errNoSuchChannel(const std::string &nick, const std::string &chan)
+{
+	return (numeric("403", nick, chan + " :No such channel"));
+}
+
+inline std::string	errNotOnChannel(const std::string &nick, const std::string &chan)
+{
+	return (numeric("442", nick, chan + " :You're not on that channel"));
+}
+
+inline std::string	errChanOpPrivsNeeded(const std::string &nick, const std::string &chan)
+{
+	return (numeric("482", nick, chan + " :You're not channel operator"));
+}
+
+inline std::string	errUserNotInChannel(const std::string &nick,
+	const std::string &target, const std::string &chan)
+{
+	return (numeric("441", nick, target + " " + chan + " :They aren't on that channel"));
+}
+
+inline std::string	errUserOnChannel(const std::string &nick,
+	const std::string &target, const std::string &chan)
+{
+	return (numeric("443", nick, target + " " + chan + " :is already on channel"));
+}
+
+inline std::string	errInviteOnlyChan(const std::string &nick, const std::string &chan)
+{
+	return (numeric("473", nick, chan + " :Cannot join channel (+i)"));
+}
+
+inline std::string	errBadChannelKey(const std::string &nick, const std::string &chan)
+{
+	return (numeric("475", nick, chan + " :Cannot join channel (+k)"));
 }
 
 } // namespace irc

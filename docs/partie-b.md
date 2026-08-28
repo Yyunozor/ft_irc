@@ -120,7 +120,11 @@ Parce que l'ordre d'arrivée n'est pas garanti. Celle des deux qui arrive en
 dernier déclenche l'accueil. irssi envoie les trois d'un coup, un autre client
 peut les espacer.
 
-### La validation du pseudo — `isValidNick()`, [src/Server.cpp:362](../src/Server.cpp)
+### La validation du pseudo — `isValidNick()`, [src/CommandsProtocol.cpp](../src/CommandsProtocol.cpp)
+
+**Mise à jour du 2026-08-28** : cette section décrivait une fonction qui
+n'existait pas encore à l'époque — c'est maintenant corrigé,
+`isValidNick()` est implémentée et branchée dans `handleNICK()`.
 
 Grammaire RFC 2812 :
 - **1er caractère** : une lettre, ou un des spéciaux `` []\`_^{|} ``
@@ -128,6 +132,9 @@ Grammaire RFC 2812 :
 - **longueur** : 9 caractères maximum
 
 Donc `1bad` est rejeté (commence par un chiffre) → `432 ERR_ERRONEUSNICKNAME`.
+Comme pour `toUpper()` plus haut, chaque caractère est casté en
+`unsigned char` avant `isalpha`/`isalnum`, pour la même raison (comportement
+indéfini sur un `char` signé négatif).
 
 ### Le renommage après enregistrement
 

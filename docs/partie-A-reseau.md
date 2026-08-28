@@ -8,6 +8,18 @@ Fichiers concernés : [`inc/Server.hpp`](../inc/Server.hpp),
 [`src/Server.cpp`](../src/Server.cpp), et deux méthodes de
 [`inc/Client.hpp`](../inc/Client.hpp) / [`src/Client.cpp`](../src/Client.cpp).
 
+> **Mise à jour** : `src/Server.cpp` a été découpé en trois unités pour éviter
+> les conflits de fusion à trois (901 lignes partagées à l'origine). Les
+> handlers B (`PASS`/`NICK`/`USER`/`PRIVMSG`/`QUIT`/...) sont partis dans
+> [`src/CommandsProtocol.cpp`](../src/CommandsProtocol.cpp), ceux de C
+> (`JOIN`/`PART`/`KICK`/`INVITE`/`TOPIC`/`MODE`) dans
+> [`src/CommandsChannel.cpp`](../src/CommandsChannel.cpp), et le parsing dans
+> [`src/Parser.cpp`](../src/Parser.cpp). **Rien de tout ça ne touche A** :
+> `Server.cpp` ne contient plus que la boucle `poll()`, le socket d'écoute,
+> l'accept/lecture/écriture bufferisées, le cycle de vie des clients, et les
+> recherches partagées (`getOrCreateChannel`, `findClientByNick`). Tout ce
+> document reste valable tel quel.
+
 ## 1. Le rôle de A
 
 A ne comprend rien au protocole IRC. Il transporte des octets entre le
@@ -299,15 +311,29 @@ CPU à 100% pour rien.
 
 ## 6. Ce qu'il reste à faire pour A
 
-- **Plafonner la taille de `_readBuf`.** Actuellement un client peut
-  envoyer des données indéfiniment sans jamais de `\r\n` et faire
-  grossir son buffer sans limite (épuisement mémoire). Un serveur IRC
-  limite en général une ligne à 512 octets (RFC) — au-delà, déconnecter
-  le client.
-- **Décider si `SIGINT` (Ctrl+C) doit fermer proprement les connexions**
-  avant de quitter, ou si laisser l'OS nettoyer suffit.
-- **Tester avec un plus grand nombre de connexions simultanées** (pas
-  seulement 2-3).
+- ~~Plafonner la taille de `_readBuf`~~ — **fait** :
+  `Client::pendingLineTooLong()` (`src/Client.cpp`) renvoie `true` au-delà de
+  512 octets accumulés sans `\r\n` (limite RFC), et `Server::readFromClient()`
+  déconnecte le client dans ce cas, juste après avoir traité toutes les
+  lignes complètes déjà reçues. Vérifié : un client qui envoie 600 octets sans
+  jamais de retour à la ligne est bien coupé, le serveur reste opérationnel
+  pour les autres.
+- ~~`extractLine()` n'accepte que `\r\n` strict~~ — **fait** : elle cherche
+  maintenant un `\n` et retire un `\r` précédent s'il est présent, donc les
+  deux formes sont acceptées. Vérifié en bytes bruts (Python) : un vrai
+  client qui envoie du `\r\n` conforme ne voit jamais de `\r` résiduel dans
+  les réponses, et une ligne vide (`\n` seul en tout début de buffer) ne
+  plante pas le serveur.
+- ~~Décider si `SIGINT` doit fermer proprement les connexions~~ — **fait** :
+  `SIGINT`/`SIGTERM` posent un flag (`g_running`, `sig_atomic_t`), la boucle
+  `poll()` sort proprement et les destructeurs tournent (`close(fd)` sur
+  chaque client restant a aussi été ajouté dans `~Server()`). Corrige une
+  fuite mémoire/fd rédhibitoire à l'évaluation (Ctrl+C tuait le process avant
+  que `~Server()` ne s'exécute).
+- **Tester avec un plus grand nombre de connexions simultanées** — fait
+  partiellement : 8 clients en parallèle avec déconnexions brutales, et un
+  test de flood (3000 messages accumulés pendant qu'un client est figé en
+  `^Z`) sans fuite ni blocage. Pas testé au-delà.
 
 ## 7. Questions probables en soutenance, et pistes de réponse
 

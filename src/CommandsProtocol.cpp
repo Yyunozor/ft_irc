@@ -17,9 +17,44 @@
 #include "Replies.hpp"
 #include "Client.hpp"
 #include "Channel.hpp"
+#include <cctype>
 #include <string>
 #include <map>
 #include <vector>
+
+/*
+** RFC 2812 grammar for a nickname:
+**   first char  : a letter, or one of []\`_^{|}
+**   later chars : letters, digits, one of []\`_^{|}, or '-'
+**   length      : at most 9 characters
+** static_cast<unsigned char> before toupper/isalpha/isalnum: passing a
+** signed char with the high bit set (accented byte, raw UTF-8) is undefined
+** behaviour otherwise, since these functions take an int representable as
+** unsigned char.
+*/
+static bool	isNickSpecial(char c)
+{
+	return (c == '[' || c == ']' || c == '\\' || c == '`'
+		|| c == '_' || c == '^' || c == '{' || c == '|');
+}
+
+static bool	isValidNick(const std::string &nick)
+{
+	if (nick.empty() || nick.size() > 9)
+		return (false);
+
+	unsigned char	first = static_cast<unsigned char>(nick[0]);
+	if (!std::isalpha(first) && !isNickSpecial(nick[0]))
+		return (false);
+
+	for (std::string::size_type i = 1; i < nick.size(); ++i)
+	{
+		unsigned char	c = static_cast<unsigned char>(nick[i]);
+		if (!std::isalnum(c) && !isNickSpecial(nick[i]) && nick[i] != '-')
+			return (false);
+	}
+	return (true);
+}
 
 void	Server::dispatchLine(Client &client, const std::string &line)
 {
@@ -83,7 +118,7 @@ void Server::handlePASS(Client &client, const std::vector<std::string> &params)
 {
 	if (params.empty())
 	{
-		client.appendToWrite("ERROR 461: PASS command requires 1 parameter: <password>""\r\n");
+		client.appendToWrite(irc::errNeedMoreParams(client.getNick(), "PASS"));
 		return;
 	}
 
@@ -91,7 +126,7 @@ void Server::handlePASS(Client &client, const std::vector<std::string> &params)
 
 	if (password != _password)
 	{
-		client.appendToWrite("ERROR 464: Password incorrect""\r\n");
+		client.appendToWrite(irc::errPasswdMismatch(client.getNick()));
 		return;
 	}
 
@@ -102,16 +137,22 @@ void Server::handleNICK(Client &client, const std::vector<std::string> &params)
 {
 	if (params.empty())
 	{
-		client.appendToWrite("ERROR 431: NICK command requires 1 parameter: <nickname>""\r\n");
+		client.appendToWrite(irc::errNoNicknameGiven(client.getNick()));
 		return;
 	}
 
 	const std::string &newNick = params[0];
 
+	if (!isValidNick(newNick))
+	{
+		client.appendToWrite(irc::errErroneusNickname(client.getNick(), newNick));
+		return;
+	}
+
 	Client *existingClient = findClientByNick(newNick);
 	if (existingClient && existingClient != &client)
 	{
-		client.appendToWrite("ERROR 433: Nickname is already in use""\r\n");
+		client.appendToWrite(irc::errNicknameInUse(client.getNick(), newNick));
 		return;
 	}
 
@@ -141,7 +182,7 @@ void	Server::handleUSER(Client &client, const std::vector<std::string> &params)
 {
 	if (client.isRegistered())
 	{
-		client.appendToWrite("ERROR 462: You may not reregister""\r\n");
+		client.appendToWrite(irc::errAlreadyRegistred(client.getNick()));
 		return;
 	}
 	// RFC 2812: USER <user> <mode> <unused> :<realname>. The username is the

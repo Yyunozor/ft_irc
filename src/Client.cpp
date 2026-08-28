@@ -75,15 +75,30 @@ void	Client::appendToWrite(const std::string &data)
 	_writeBuf += data;
 }
 
+/*
+** Terminates on a bare '\n' too, not just "\r\n". The RFC mandates the
+** latter, but plenty of real-world tools used to poke the server by hand
+** (nc, printf, most test scripts) send only '\n' -- without this, such a
+** line just sits in _readBuf forever, looking like a hang.
+*/
 bool	Client::extractLine(std::string &line)
 {
-	std::string::size_type pos = _readBuf.find("\r\n");
+	std::string::size_type pos = _readBuf.find('\n');
 
 	if (pos == std::string::npos)
 		return (false);
-	line = _readBuf.substr(0, pos);
-	_readBuf.erase(0, pos + 2);
+
+	std::string::size_type end = pos;
+	if (end > 0 && _readBuf[end - 1] == '\r')
+		--end;
+	line = _readBuf.substr(0, end);
+	_readBuf.erase(0, pos + 1);
 	return (true);
+}
+
+bool	Client::pendingLineTooLong() const
+{
+	return (_readBuf.size() > 512);
 }
 
 void	Client::consumeWrite(std::size_t n)

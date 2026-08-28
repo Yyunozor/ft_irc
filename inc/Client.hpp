@@ -70,6 +70,12 @@ class Client
 		// Returns false if no full line is available yet.
 		bool				extractLine(std::string &line);
 
+		// RFC 2812: a line is at most 512 bytes including CRLF. True once
+		// what's left in _readBuf (with every complete line already
+		// extracted) exceeds that without ever finding a terminator --
+		// otherwise a client that never sends "\r\n" grows it forever.
+		bool				pendingLineTooLong() const;
+
 		// Erases the first n bytes of the write buffer (bytes actually sent).
 		void				consumeWrite(std::size_t n);
 

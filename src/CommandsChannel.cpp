@@ -25,21 +25,30 @@ void Server::handleJoin(Client &client, const std::vector<std::string> &params)
 {
     if (params.empty())
     {
-        client.appendToWrite("ERROR 461: JOIN command requires 1 parameter: <channel>\r\n");
+        client.appendToWrite(irc::errNeedMoreParams(client.getNick(), "JOIN"));
         return;
     }
 
 	if(!client.isRegistered())
 	{
-		client.appendToWrite("ERROR 451: MODE command can only be used by registered clients""\r\n");
+		client.appendToWrite(irc::errNotRegistered(client.getNick()));
 		return ;
+	}
+
+	// A channel name always starts with '#' or '&'; anything else can never
+	// have been created by getOrCreateChannel(), so treat it the same as an
+	// unknown channel instead of creating a channel nobody could ever join.
+	if (params[0][0] != '#' && params[0][0] != '&')
+	{
+		client.appendToWrite(irc::errNoSuchChannel(client.getNick(), params[0]));
+		return;
 	}
 
     Channel *channel = getOrCreateChannel(&client, params[0]);
 
     if (channel->isInviteOnly() && !channel->isInvited(&client))
     {
-        client.appendToWrite("ERROR 473: Cannot join channel " + params[0] + ", invite only\r\n");
+        client.appendToWrite(irc::errInviteOnlyChan(client.getNick(), params[0]));
         return;
     }
 
@@ -57,7 +66,7 @@ void Server::handleJoin(Client &client, const std::vector<std::string> &params)
 
 	if (params.size() > 1 && params[1] != channel->getKey())
 	{
-		client.appendToWrite("ERROR 475: Cannot join channel " + params[0] + ", incorrect key\r\n");
+		client.appendToWrite(irc::errBadChannelKey(client.getNick(), params[0]));
 		return;
 	}
 
@@ -106,7 +115,7 @@ void Server::handleInvite(Client &client, const std::vector<std::string> &params
 {
     if (params.size() < 2)
     {
-        client.appendToWrite("ERROR 461: INVITE command requires 2 parameters: <nick> <channel>""\r\n");
+        client.appendToWrite(irc::errNeedMoreParams(client.getNick(), "INVITE"));
         return;
     }
 
@@ -116,7 +125,7 @@ void Server::handleInvite(Client &client, const std::vector<std::string> &params
     std::map<std::string, Channel *>::iterator it = _channels.find(channelName);
     if (it == _channels.end())
     {
-        client.appendToWrite("ERROR 403: No such channel""\r\n");
+        client.appendToWrite(irc::errNoSuchChannel(client.getNick(), channelName));
         return;
     }
 
@@ -124,26 +133,26 @@ void Server::handleInvite(Client &client, const std::vector<std::string> &params
 
     if (!channel->isOperator(&client))
     {
-        client.appendToWrite("ERROR 482: You're not a channel operator""\r\n");
+        client.appendToWrite(irc::errChanOpPrivsNeeded(client.getNick(), channelName));
         return;
     }
 
     Client *target = findClientByNick(targetNick);
     if (!target)
     {
-        client.appendToWrite("ERROR 401: No such nick/channel""\r\n");
+        client.appendToWrite(irc::errNoSuchNick(client.getNick(), targetNick));
         return;
     }
 
     if (channel->isMember(target))
     {
-        client.appendToWrite("ERROR 443: User is already in the channel""\r\n");
+        client.appendToWrite(irc::errUserOnChannel(client.getNick(), targetNick, channelName));
         return;
     }
 
     if (channel->isInvited(target))
     {
-        client.appendToWrite("ERROR 443: User is already invited to the channel""\r\n");
+        client.appendToWrite(irc::errUserOnChannel(client.getNick(), targetNick, channelName));
         return;
     }
 
@@ -159,7 +168,7 @@ void Server::handlePart(Client &client, const std::vector<std::string> &params)
 {
     if (params.empty())
     {
-        client.appendToWrite("ERROR 461: PART command requires 1 parameter: <channel>""\r\n");
+        client.appendToWrite(irc::errNeedMoreParams(client.getNick(), "PART"));
         return;
     }
 
@@ -168,7 +177,7 @@ void Server::handlePart(Client &client, const std::vector<std::string> &params)
     std::map<std::string, Channel *>::iterator it = _channels.find(channelName);
     if (it == _channels.end())
     {
-        client.appendToWrite("ERROR 403: No such channel""\r\n");
+        client.appendToWrite(irc::errNoSuchChannel(client.getNick(), channelName));
         return;
     }
 
@@ -176,7 +185,7 @@ void Server::handlePart(Client &client, const std::vector<std::string> &params)
 
     if (!channel->isMember(&client))
     {
-        client.appendToWrite("ERROR 442: You're not a member of this channel""\r\n");
+        client.appendToWrite(irc::errNotOnChannel(client.getNick(), channelName));
         return;
     }
 
@@ -195,7 +204,7 @@ void Server::handleKick(Client &client, const std::vector<std::string> &params)
 {
     if (params.size() < 2)
     {
-        client.appendToWrite("ERROR 461: KICK command requires 2 parameters: <channel> <user>""\r\n");
+        client.appendToWrite(irc::errNeedMoreParams(client.getNick(), "KICK"));
         return;
     }
 
@@ -205,7 +214,7 @@ void Server::handleKick(Client &client, const std::vector<std::string> &params)
     std::map<std::string, Channel *>::iterator it = _channels.find(channelName);
     if (it == _channels.end())
     {
-        client.appendToWrite("ERROR 403: No such channel""\r\n");
+        client.appendToWrite(irc::errNoSuchChannel(client.getNick(), channelName));
         return;
     }
 
@@ -213,26 +222,31 @@ void Server::handleKick(Client &client, const std::vector<std::string> &params)
 
     if (!channel->isOperator(&client))
     {
-        client.appendToWrite("ERROR 482: You're not a channel operator""\r\n");
+        client.appendToWrite(irc::errChanOpPrivsNeeded(client.getNick(), channelName));
         return;
     }
 
     Client *target = findClientByNick(targetNick);
     if (!target || !channel->isMember(target))
     {
-        client.appendToWrite("ERROR 441: User not in channel""\r\n");
+        client.appendToWrite(irc::errUserNotInChannel(client.getNick(), targetNick, channelName));
         return;
     }
 
+    // RFC 2812 3.2.8: an optional trailing <comment>; real clients default it
+    // to the kicker's own nick when omitted.
+    const std::string &reason = params.size() > 2 ? params[2] : client.getNick();
+
     channel->removeMember(target);
-    channel->broadcast(irc::fromUser(client.prefix(), "KICK " + channel->getName() + " " + target->getNick()));
+    channel->broadcast(irc::fromUser(client.prefix(), "KICK " + channel->getName()
+        + " " + target->getNick() + " :" + reason));
 }
 
 void Server::handleTopic(Client &client, const std::vector<std::string> &params)
 {
     if (params.empty())
     {
-        client.appendToWrite("ERROR 461: TOPIC command requires 1 parameter: <channel>""\r\n");
+        client.appendToWrite(irc::errNeedMoreParams(client.getNick(), "TOPIC"));
         return;
     }
 
@@ -241,7 +255,7 @@ void Server::handleTopic(Client &client, const std::vector<std::string> &params)
     std::map<std::string, Channel *>::iterator it = _channels.find(channelName);
     if (it == _channels.end())
     {
-        client.appendToWrite("ERROR 403: No such channel""\r\n");
+        client.appendToWrite(irc::errNoSuchChannel(client.getNick(), channelName));
         return;
     }
 
@@ -249,19 +263,23 @@ void Server::handleTopic(Client &client, const std::vector<std::string> &params)
 
     if (!channel->isMember(&client))
     {
-        client.appendToWrite("ERROR 442: You're not a member of this channel""\r\n");
+        client.appendToWrite(irc::errNotOnChannel(client.getNick(), channelName));
         return;
     }
 
     if (channel->isTopicRestricted() && !channel->isOperator(&client))
     {
-        client.appendToWrite("ERROR 482: You're not a channel operator""\r\n");
+        client.appendToWrite(irc::errChanOpPrivsNeeded(client.getNick(), channelName));
         return;
     }
 
     if (params.size() == 1)
     {
-        client.appendToWrite(":" + channel->getName() + " : " + channel->getTopic() + "\r\n");
+        if (channel->getTopic().empty())
+            client.appendToWrite(irc::rplNoTopic(client.getNick(), channelName));
+        else
+            client.appendToWrite(irc::rplTopic(client.getNick(), channelName,
+                channel->getTopic()));
     }
     else
     {
@@ -276,7 +294,7 @@ void	Server::handleMode(Client &client, const std::vector<std::string> &params)
 	// bare "MODE" indexed an empty vector.
 	if(params.size() < 1)
 	{
-		client.appendToWrite("ERROR 461: MODE command requires at least 1 parameter: <channel> [<mode>]""\r\n");
+		client.appendToWrite(irc::errNeedMoreParams(client.getNick(), "MODE"));
 		return ;
 	}
 
@@ -286,23 +304,23 @@ void	Server::handleMode(Client &client, const std::vector<std::string> &params)
 
 	if(!client.isRegistered())
 	{
-		client.appendToWrite("ERROR 451: MODE command can only be used by registered clients""\r\n");
+		client.appendToWrite(irc::errNotRegistered(client.getNick()));
 		return ;
 	}
 	if(it == _channels.end())
 	{
-		client.appendToWrite("ERROR 403: MODE command can only be used for existing channels""\r\n");
+		client.appendToWrite(irc::errNoSuchChannel(client.getNick(), channelName));
 		return ;
 	}
 	Channel *channel = it->second;
 	if(!channel->isMember(&client))
 	{
-		client.appendToWrite("ERROR 442: MODE command can only be used by channel members""\r\n");
+		client.appendToWrite(irc::errNotOnChannel(client.getNick(), channelName));
 		return ;
 	}
 	if(!channel->isOperator(&client))
 	{
-		client.appendToWrite("ERROR 482: MODE command can only be used by channel operators""\r\n");
+		client.appendToWrite(irc::errChanOpPrivsNeeded(client.getNick(), channelName));
 		return ;
 	}
 	// "MODE #chan" without a mode letter is a query, not a change: nothing to

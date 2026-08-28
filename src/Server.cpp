@@ -201,6 +201,11 @@ bool	Server::readFromClient(int fd)
 	std::string line;
 	while (client.extractLine(line))
 		dispatchLine(client, line);
+	// A client flooding bytes with no "\r\n" would otherwise grow _readBuf
+	// without bound; dropping it here is the only place both A owns the
+	// buffer and can act on poll()-driven I/O.
+	if (client.pendingLineTooLong())
+		return (false);
 	return (true);
 }
 

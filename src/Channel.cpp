@@ -1,5 +1,7 @@
 #include "Channel.hpp"
 #include "Client.hpp"
+#include "Replies.hpp"
+#include <algorithm>
 
 Channel::Channel(const std::string &name)
 	: _name(name), _inviteOnly(false), _topicRestricted(false), _userLimit(0)
@@ -52,13 +54,33 @@ const std::set<Client *>	&Channel::getOperators() const
 
 void	Channel::addMember(Client *client)
 {
-	_members.insert(client);
+	if (_members.insert(client).second)
+		_joinOrder.push_back(client);
 }
 
+/*
+** If the departing member was the channel's last operator, the longest
+** standing remaining member (front of _joinOrder, since the leaving client
+** is removed from it first) is promoted -- otherwise the channel would be
+** left with nobody able to MODE/KICK/INVITE in it.
+*/
 void	Channel::removeMember(Client *client)
 {
+	bool	wasOperator = isOperator(client);
+
 	_operators.erase(client);
 	_members.erase(client);
+	_joinOrder.erase(std::remove(_joinOrder.begin(), _joinOrder.end(), client),
+		_joinOrder.end());
+
+	if (wasOperator && _operators.empty() && !_joinOrder.empty())
+	{
+		Client	*promoted = _joinOrder.front();
+
+		_operators.insert(promoted);
+		broadcast(":" SERVER_NAME " MODE " + _name + " +o "
+			+ promoted->getNick() + "\r\n");
+	}
 }
 
 bool	Channel::isMember(Client *client) const

@@ -3,6 +3,7 @@
 
 # include <string>
 # include <set>
+# include <vector>
 # include <cstddef>
 
 class Client;
@@ -22,6 +23,10 @@ class Channel
 		std::set<Client *>	_members;
 		std::set<Client *>	_operators;			// mode o
 		std::set<Client *>	_invited;			// for mode i
+		// _members has no insertion order (ordered by pointer value), but
+		// promoting an operator needs "who has been here longest" -- so join
+		// order is tracked separately here.
+		std::vector<Client *>	_joinOrder;
 		bool				_inviteOnly;		// mode i
 		bool				_topicRestricted;	// mode t
 		std::size_t			_userLimit;			// mode l (0 = no limit)
@@ -72,9 +77,6 @@ class Channel
 		void						removeTopicRestricted();
 		// Mode l: 0 means no limit.
 		void						setUserLimit(std::size_t limit);
-
-		void						removeInviteOnly(Channel *channel);
-
 
 		void						addMember(Client *client);
 		void						removeMember(Client *client);

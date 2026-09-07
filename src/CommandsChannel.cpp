@@ -189,8 +189,11 @@ void Server::handlePart(Client &client, const std::vector<std::string> &params)
         return;
     }
 
-    channel->removeMember(&client);
+    // RFC 2812 3.2.2: the PART is sent to every member of the channel, the
+    // one leaving included -- a real client waits for that echo to close the
+    // channel window -- so broadcast before removeMember() drops them.
     channel->broadcast(irc::fromUser(client.prefix(), "PART " + channel->getName()));
+    channel->removeMember(&client);
     // Same rule as removeFromAllChannels(): the last one out closes the door,
     // so an empty channel never survives to become an unjoinable ghost.
     if (channel->getMembers().empty())
@@ -237,9 +240,12 @@ void Server::handleKick(Client &client, const std::vector<std::string> &params)
     // to the kicker's own nick when omitted.
     const std::string &reason = params.size() > 2 ? params[2] : client.getNick();
 
-    channel->removeMember(target);
+    // The KICK line goes to every member INCLUDING the target -- that is how
+    // the kicked client learns it was removed -- so it must be broadcast
+    // before removeMember() takes the target out of the channel.
     channel->broadcast(irc::fromUser(client.prefix(), "KICK " + channel->getName()
         + " " + target->getNick() + " :" + reason));
+    channel->removeMember(target);
 }
 
 void Server::handleTopic(Client &client, const std::vector<std::string> &params)

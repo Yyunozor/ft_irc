@@ -64,7 +64,13 @@ void Server::handleJoin(Client &client, const std::vector<std::string> &params)
 		return;
 	}
 
-	if (params.size() > 1 && params[1] != channel->getKey())
+	// A channel key is required whenever one is set, invite or not -- being
+	// invited only waives the invite-only gate above, never the key. Without
+	// this, a JOIN that simply omitted params[1] (as an invited client often
+	// does, trusting the invite alone) skipped the check entirely instead of
+	// being rejected.
+	if (!channel->getKey().empty()
+		&& (params.size() <= 1 || params[1] != channel->getKey()))
 	{
 		client.appendToWrite(irc::errBadChannelKey(client.getNick(), params[0]));
 		return;

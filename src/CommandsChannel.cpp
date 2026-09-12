@@ -279,12 +279,6 @@ void Server::handleTopic(Client &client, const std::vector<std::string> &params)
         return;
     }
 
-    if (channel->isTopicRestricted() && !channel->isOperator(&client))
-    {
-        client.appendToWrite(irc::errChanOpPrivsNeeded(client.getNick(), channelName));
-        return;
-    }
-
     if (params.size() == 1)
     {
         if (channel->getTopic().empty())
@@ -295,6 +289,14 @@ void Server::handleTopic(Client &client, const std::vector<std::string> &params)
     }
     else
     {
+        // Le mode t restreint la modification du sujet, pas sa consultation
+        // (RFC 2812 3.2.4) : placé plus haut, il renvoyait 482 à un membre
+        // qui demandait simplement "TOPIC #chan" au lieu de 331/332.
+        if (channel->isTopicRestricted() && !channel->isOperator(&client))
+        {
+            client.appendToWrite(irc::errChanOpPrivsNeeded(client.getNick(), channelName));
+            return;
+        }
         channel->setTopic(params[1]);
         channel->broadcast(irc::fromUser(client.prefix(), "TOPIC " + channel->getName() + " :" + params[1]));
     }

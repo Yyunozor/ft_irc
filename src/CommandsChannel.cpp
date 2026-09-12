@@ -314,6 +314,20 @@ void	Server::handleMode(Client &client, const std::vector<std::string> &params)
 
 	const std::string &channelName = params[0];
 
+	// Une cible qui n'est pas un salon est un mode utilisateur, pas un mode de
+	// salon : irssi envoie "MODE <pseudo> +i" juste apres l'enregistrement
+	// (reglage usermode). Sans cette sortie, la recherche ci-dessous ne trouve
+	// evidemment aucun salon de ce nom et repond 403 avec le pseudo du client
+	// dans le champ salon -- une erreur affichee des la connexion.
+	if (channelName[0] != '#' && channelName[0] != '&')
+	{
+		if (channelName == client.getNick())
+			client.appendToWrite(irc::rplUmodeIs(client.getNick()));
+		else
+			client.appendToWrite(irc::errUsersDontMatch(client.getNick()));
+		return ;
+	}
+
 	std::map<std::string, Channel *>::iterator it = _channels.find(channelName);
 
 	if(!client.isRegistered())

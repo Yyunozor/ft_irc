@@ -125,6 +125,24 @@ inline std::string	errNicknameInUse(const std::string &nick, const std::string &
 	return (numeric("433", nick, wanted + " :Nickname is already in use"));
 }
 
+// --- user modes ------------------------------------------------------------
+
+/*
+** No user mode is implemented, so the list is always empty. Answering this
+** instead of letting the command fall through to the channel lookup is what
+** keeps a reference client from showing "<nick> :No such channel" the moment
+** it connects: irssi sends "MODE <nick> +i" right after registration.
+*/
+inline std::string	rplUmodeIs(const std::string &nick)
+{
+	return (numeric("221", nick, ":+"));
+}
+
+inline std::string	errUsersDontMatch(const std::string &nick)
+{
+	return (numeric("502", nick, ":Cannot change mode for other users"));
+}
+
 // --- channel numerics, for C ----------------------------------------------
 
 inline std::string	rplNoTopic(const std::string &nick, const std::string &chan)

@@ -2,6 +2,7 @@
 #include "Client.hpp"
 #include "Replies.hpp"
 #include <algorithm>
+#include <sstream>
 
 Channel::Channel(const std::string &name)
 	: _name(name), _inviteOnly(false), _topicRestricted(false), _userLimit(0)
@@ -186,6 +187,37 @@ void	Channel::removeTopicRestricted()
 void	Channel::setUserLimit(std::size_t limit)
 {
 	_userLimit = limit;
+}
+
+/*
+** Flags first, then their arguments in the same order -- that is the shape
+** RPL_CHANNELMODEIS requires, and the one a client parses to fill its channel
+** window. A channel with nothing set answers a bare "+", never an empty
+** string, which would leave the numeric malformed.
+*/
+std::string	Channel::modeString() const
+{
+	std::string	flags = "+";
+	std::string	args;
+
+	if (_inviteOnly)
+		flags += "i";
+	if (_topicRestricted)
+		flags += "t";
+	if (!_key.empty())
+	{
+		flags += "k";
+		args += " " + _key;
+	}
+	if (_userLimit > 0)
+	{
+		std::ostringstream	oss;
+
+		oss << _userLimit;
+		flags += "l";
+		args += " " + oss.str();
+	}
+	return (flags + args);
 }
 
 void	Channel::removeInviteOnly()

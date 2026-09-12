@@ -173,6 +173,17 @@ inline std::string	rplEndOfNames(const std::string &nick, const std::string &cha
 	return (numeric("366", nick, chan + " :End of /NAMES list"));
 }
 
+/*
+** The answer to a bare "MODE #chan", which is a query and not a change. Every
+** real client sends it on its own right after JOIN, so any member must be able
+** to ask -- not only operators.
+*/
+inline std::string	rplChannelModeIs(const std::string &nick, const std::string &chan,
+	const std::string &modes)
+{
+	return (numeric("324", nick, chan + " " + modes));
+}
+
 inline std::string	errChannelIsFull(const std::string &nick, const std::string &chan)
 {
 	return (numeric("471", nick, chan + " :Cannot join channel (+l)"));

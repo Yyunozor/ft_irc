@@ -77,6 +77,10 @@ class Channel
 		void						removeTopicRestricted();
 		// Mode l: 0 means no limit.
 		void						setUserLimit(std::size_t limit);
+		// The channel's active modes as RPL_CHANNELMODEIS wants them, e.g.
+		// "+itk secret" or just "+" when none is set. Only members ever see
+		// this, so the key and the limit are included.
+		std::string					modeString() const;
 
 		void						addMember(Client *client);
 		void						removeMember(Client *client);

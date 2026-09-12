@@ -346,15 +346,21 @@ void	Server::handleMode(Client &client, const std::vector<std::string> &params)
 		client.appendToWrite(irc::errNotOnChannel(client.getNick(), channelName));
 		return ;
 	}
+	// "MODE #chan" without a mode letter is a query, not a change, so it must
+	// be answered BEFORE the operator check: every real client sends it on its
+	// own right after JOIN, and refusing it made each ordinary member see
+	// "You're not channel operator" for a command they never typed.
+	if(params.size() < 2)
+	{
+		client.appendToWrite(irc::rplChannelModeIs(client.getNick(),
+			channel->getName(), channel->modeString()));
+		return ;
+	}
 	if(!channel->isOperator(&client))
 	{
 		client.appendToWrite(irc::errChanOpPrivsNeeded(client.getNick(), channelName));
 		return ;
 	}
-	// "MODE #chan" without a mode letter is a query, not a change: nothing to
-	// apply, and params[1] would be out of bounds.
-	if(params.size() < 2)
-		return ;
 
 	const std::string	&modeStr = params[1];
 	// A mode is only announced once it has actually changed something. Before

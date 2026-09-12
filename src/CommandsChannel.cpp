@@ -356,57 +356,129 @@ void	Server::handleMode(Client &client, const std::vector<std::string> &params)
 	if(params.size() < 2)
 		return ;
 
-	// Each of these takes an argument: params[2] was read unconditionally, and
-	// findClientByNick() returns NULL for an unknown nickname -- storing that
-	// NULL in the operator set made the next broadcast() dereference it.
-	if(params[1] == "+o" && params.size() > 2)
+	const std::string	&modeStr = params[1];
+	// A mode is only announced once it has actually changed something. Before
+	// this, an unrecognised modeStr (a typo, or a client gluing a stray word
+	// onto what looked like a valid mode -- "+tsalon" instead of "+t salon")
+	// matched none of the branches below yet still fell through to an
+	// unconditional broadcast, announcing a change that never happened.
+	bool				applied = false;
+	// Only for a mode that both takes an argument and was actually applied:
+	// i, t, -k and -l never take one, so garbage in params[2] must never be
+	// glued onto their announcement either.
+	std::string			arg;
+	bool				hasArg = false;
+
+	if (modeStr == "+o" || modeStr == "-o")
 	{
-		const std::string &targetNick = params[2];
-		Client *target = findClientByNick(targetNick);
-		if (target != NULL)
+		// findClientByNick() returns NULL for an unknown nickname -- storing
+		// that NULL in the operator set made the next broadcast() on this
+		// channel dereference it.
+		if (params.size() <= 2)
+		{
+			client.appendToWrite(irc::errNeedMoreParams(client.getNick(), "MODE"));
+			return ;
+		}
+		Client *target = findClientByNick(params[2]);
+		if (target == NULL)
+		{
+			client.appendToWrite(irc::errNoSuchNick(client.getNick(), params[2]));
+			return ;
+		}
+		if (modeStr == "+o")
 			channel->addOperator(target);
-	}
-	if(params[1] == "-o" && params.size() > 2)
-	{
-		const std::string &targetNick = params[2];
-		Client *target = findClientByNick(targetNick);
-		if (target != NULL)
+		else
 			channel->removeOperator(target);
+		arg = params[2];
+		hasArg = true;
+		applied = true;
 	}
-	if(params[1] == "+i")
+	else if (modeStr == "+i")
+	{
 		channel->setInviteOnly();
-	if(params[1] == "-i")
+		applied = true;
+	}
+	else if (modeStr == "-i")
+	{
 		channel->removeInviteOnly();
+		applied = true;
+	}
 	// Mode t restricts TOPIC to operators; it does not touch the topic text.
 	// The previous code called setTopic()/removeTopic(), which changed or
 	// erased the subject instead.
-	if(params[1] == "+t")
+	else if (modeStr == "+t")
+	{
 		channel->setTopicRestricted();
-	if(params[1] == "-t")
+		applied = true;
+	}
+	else if (modeStr == "-t")
+	{
 		channel->removeTopicRestricted();
-	if(params[1] == "+k" && params.size() > 2)
+		applied = true;
+	}
+	else if (modeStr == "+k")
+	{
+		if (params.size() <= 2)
+		{
+			client.appendToWrite(irc::errNeedMoreParams(client.getNick(), "MODE"));
+			return ;
+		}
 		channel->setKey(params[2]);
-	if(params[1] == "-k")
+		arg = params[2];
+		hasArg = true;
+		applied = true;
+	}
+	else if (modeStr == "-k")
+	{
 		channel->removeKey();
+		applied = true;
+	}
 	// Mode l: "+l <n>" caps the membership, "-l" lifts the cap. A limit that
 	// is not a positive number is ignored rather than parsed as 0, which
 	// would silently mean "no limit".
-	if(params[1] == "+l" && params.size() > 2)
+	else if (modeStr == "+l")
 	{
+		if (params.size() <= 2)
+		{
+			client.appendToWrite(irc::errNeedMoreParams(client.getNick(), "MODE"));
+			return ;
+		}
+
 		std::istringstream	iss(params[2]);
 		long				limit = 0;
 
 		if ((iss >> limit) && iss.eof() && limit > 0)
+		{
 			channel->setUserLimit(static_cast<std::size_t>(limit));
+			arg = params[2];
+			hasArg = true;
+			applied = true;
+		}
+		// Malformed limit ("+l abc", "+l -3"): silently rejected, nothing to
+		// announce since nothing changed.
 	}
-	if(params[1] == "-l")
+	else if (modeStr == "-l")
+	{
 		channel->setUserLimit(0);
+		applied = true;
+	}
+	else
+	{
+		// Anything not matched above -- an unknown letter, or a mangled
+		// string like "+tsalon" -- is rejected outright instead of being
+		// parroted back to the whole channel as if it had taken effect.
+		client.appendToWrite(irc::errUnknownMode(client.getNick(), modeStr));
+		return ;
+	}
+
+	if (!applied)
+		return ;
 
 	// Every member has to learn about the change, otherwise their client keeps
 	// showing stale channel modes.
-	std::string	announce = params[1];
-	if (params.size() > 2)
-		announce += " " + params[2];
+	std::string	announce = modeStr;
+	if (hasArg)
+		announce += " " + arg;
 	channel->broadcast(irc::fromUser(client.prefix(),
 		"MODE " + channel->getName() + " " + announce));
 }

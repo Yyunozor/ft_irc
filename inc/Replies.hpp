@@ -215,6 +215,11 @@ inline std::string	errBadChannelKey(const std::string &nick, const std::string &
 	return (numeric("475", nick, chan + " :Cannot join channel (+k)"));
 }
 
+inline std::string	errUnknownMode(const std::string &nick, const std::string &modeStr)
+{
+	return (numeric("472", nick, modeStr + " :is unknown mode char to me"));
+}
+
 } // namespace irc
 
 #endif
